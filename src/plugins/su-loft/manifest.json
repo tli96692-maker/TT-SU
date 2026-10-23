@@ -1,0 +1,25 @@
+{
+  "id": "su-loft",
+  "name": "中枢放样",
+  "version": "0.2.1",
+  "min_su": "2024",
+  "author": "SU 中枢团队",
+  "license": "MIT",
+  "category": "model",
+  "description": "两条同为开放或闭合的无分叉轮廓放样，自动对齐方向并保留边界与原轮廓，曲面独立编组。",
+  "keywords": [
+    "放样",
+    "fangyang",
+    "loft",
+    "蒙皮",
+    "mengpi",
+    "曲面",
+    "qumian"
+  ],
+  "entry": "su-loft.rb",
+  "command": {
+    "title": "中枢放样",
+    "id": "loft_curves"
+  },
+  "shortcut": "Alt+L"
+}

@@ -1,0 +1,33 @@
+name: 使用问题 / Bug
+description: 报告 TT中枢安装、界面、更新或建模问题
+title: "[问题] "
+body:
+  - type: markdown
+    attributes:
+      value: "请提供最小复现信息。截图和日志请先移除私人路径、账号信息及客户模型内容。"
+  - type: input
+    id: version
+    attributes:
+      label: TT中枢版本与安装来源
+      placeholder: "例如 0.2.3-beta.1，GitHub Release Core"
+    validations:
+      required: true
+  - type: input
+    id: environment
+    attributes:
+      label: 操作系统和 SketchUp 版本
+      placeholder: "例如 Windows 11，SketchUp 2024 24.0.484"
+    validations:
+      required: true
+  - type: textarea
+    id: reproduce
+    attributes:
+      label: 复现步骤、预期和实际结果
+      description: "建模问题请描述输入对象、编辑层级、单位及能否撤销。"
+    validations:
+      required: true
+  - type: textarea
+    id: diagnostics
+    attributes:
+      label: 诊断信息或截图
+      description: "可从面板底部“运行与诊断”查看状态；不必上传完整私人模型。"

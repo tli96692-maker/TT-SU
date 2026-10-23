@@ -1,0 +1,24 @@
+{
+  "id": "su-scale",
+  "name": "中枢缩放",
+  "version": "0.2.1",
+  "min_su": "2024",
+  "author": "SU 中枢团队",
+  "license": "MIT",
+  "category": "model",
+  "description": "自由盒/轴向缩放：按X/Y/Z独立倍率或目标毫米尺寸，支持当前编辑坐标及单个组/组件的局部坐标，中心或最小角固定。",
+  "keywords": [
+    "缩放",
+    "suofang",
+    "scale",
+    "自由盒",
+    "轴向",
+    "局部",
+    "尺寸"
+  ],
+  "entry": "su-scale.rb",
+  "command": {
+    "title": "中枢缩放",
+    "id": "scale_selection"
+  }
+}

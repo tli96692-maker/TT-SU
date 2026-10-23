@@ -1,0 +1,349 @@
+{
+  "version": 1,
+  "updatedAt": "2026-10-20T23:47:50.903285+00:00",
+  "plugins": [
+    {
+      "id": "parametric-modeling",
+      "name": "Parametric Modeling 参数化建模",
+      "version": "0.0.7",
+      "category": "model",
+      "description": "Parametric Modeling：SketchUp 节点式参数化建模，改参数即时更新。",
+      "keywords": [],
+      "license": "GPL-3.0",
+      "author": "Samuel Tallet",
+      "official": true,
+      "homepage": "https://github.com/SamuelTallet/SketchUp-Parametric-Modeling-Plugin",
+      "dependencies": []
+    },
+    {
+      "id": "universal-importer",
+      "name": "Universal Importer 通用导入",
+      "version": "1.2.6",
+      "category": "import",
+      "description": "在 SketchUp 中导入 50+ 种格式的 3D 模型，支持即时减面。",
+      "keywords": [],
+      "license": "GPL-3.0",
+      "author": "Samuel Tallet",
+      "official": true,
+      "homepage": "https://github.com/SamuelTallet/SketchUp-Universal-Importer-Plugin",
+      "dependencies": []
+    },
+    {
+      "id": "cleanup",
+      "name": "CleanUp³ 模型清理",
+      "version": "3.4.3",
+      "category": "clean",
+      "description": "模型清理与优化：修复问题、清除无效元素。",
+      "keywords": [],
+      "license": "MIT",
+      "author": "ThomThom",
+      "official": true,
+      "homepage": "https://github.com/thomthom/cleanup",
+      "dependencies": [
+        {
+          "require": "TT_Lib2/core.rb",
+          "name": "TT_Lib²",
+          "homepage": "https://extensions.sketchup.com/extension/c03a2b93-3365-4ef1-95f4-f35158757622/tt-lib"
+        }
+      ]
+    },
+    {
+      "id": "quadface-tools",
+      "name": "QuadFace Tools 四边面工具",
+      "version": "1.0.0",
+      "category": "model",
+      "description": "四边面建模工具集：选择、编辑与转换四边面网格。",
+      "keywords": [],
+      "license": "MIT",
+      "author": "ThomThom",
+      "official": true,
+      "homepage": "https://github.com/thomthom/quadface-tools",
+      "dependencies": [
+        {
+          "require": "TT_Lib2/core.rb",
+          "name": "TT_Lib²",
+          "homepage": "https://extensions.sketchup.com/extension/c03a2b93-3365-4ef1-95f4-f35158757622/tt-lib"
+        }
+      ]
+    },
+    {
+      "id": "material-tools",
+      "name": "Material Tools 材质工具",
+      "version": "2.7.2",
+      "category": "material",
+      "description": "Material Tools 材质工具集：批量移除材质、清理纹理与颜色烘焙等。",
+      "keywords": [],
+      "license": "MIT",
+      "author": "ThomThom",
+      "official": true,
+      "homepage": "https://github.com/thomthom/material-tools",
+      "dependencies": [
+        {
+          "require": "TT_Lib2/core.rb",
+          "name": "TT_Lib²",
+          "homepage": "https://extensions.sketchup.com/extension/c03a2b93-3365-4ef1-95f4-f35158757622/tt-lib"
+        }
+      ]
+    },
+    {
+      "id": "place-in-grid",
+      "name": "Place In Grid 网格阵列",
+      "version": "2020-03-10",
+      "category": "component",
+      "description": "重排当前层级全部群组/组件，清除原旋转与缩放并添加网格线；运行前确认。",
+      "keywords": [],
+      "license": "MIT",
+      "author": "ThomThom",
+      "official": true,
+      "homepage": "https://github.com/thomthom/place_in_grid",
+      "dependencies": []
+    },
+    {
+      "id": "axes-tools",
+      "name": "坐标轴工具",
+      "version": "2022-02-24",
+      "category": "draw",
+      "description": "批量调整组件与群组的坐标轴原点。",
+      "keywords": [],
+      "license": "MIT",
+      "author": "ThomThom",
+      "official": true,
+      "homepage": "https://github.com/thomthom/axes-tools",
+      "dependencies": [
+        {
+          "require": "TT_Lib2/core.rb",
+          "name": "TT_Lib²",
+          "homepage": "https://extensions.sketchup.com/extension/c03a2b93-3365-4ef1-95f4-f35158757622/tt-lib"
+        }
+      ]
+    },
+    {
+      "id": "component-to-group",
+      "name": "组件转群组",
+      "version": "1.1.0",
+      "category": "component",
+      "description": "将组件转换为群组并保留实例属性，便于后续布尔运算。",
+      "keywords": [],
+      "license": "MIT",
+      "author": "Eneroth3",
+      "official": true,
+      "homepage": "https://github.com/Eneroth3/component-to-group",
+      "dependencies": []
+    },
+    {
+      "id": "townhouse-system",
+      "name": "Eneroth 联排街区生成",
+      "version": "1.1.4",
+      "category": "arch",
+      "description": "快速绘制周边街区联排住宅，支持非正交转角与山墙。",
+      "keywords": [],
+      "license": "MIT",
+      "author": "Eneroth3",
+      "official": true,
+      "homepage": "https://github.com/Eneroth3/townhouse-system",
+      "dependencies": []
+    },
+    {
+      "id": "viewport-resizer",
+      "name": "视口尺寸工具",
+      "version": "1.0.4",
+      "category": "render",
+      "description": "调整 SketchUp 视口尺寸与比例，统一导出图像/视频分辨率。",
+      "keywords": [],
+      "license": "MIT",
+      "author": "Eneroth3",
+      "official": true,
+      "homepage": "https://github.com/Eneroth3/Viewport-Resizer-2",
+      "dependencies": []
+    },
+    {
+      "id": "open-newer-version",
+      "name": "打开高版本文件",
+      "version": "1.0.8",
+      "category": "import",
+      "description": "转换并打开由更高版本 SketchUp 创建的模型。",
+      "keywords": [],
+      "license": "MIT",
+      "author": "Eneroth3",
+      "official": true,
+      "homepage": "https://github.com/Eneroth3/open-newer-version",
+      "dependencies": []
+    },
+    {
+      "id": "legacy-save",
+      "name": "另存低版本",
+      "version": "1.0.2",
+      "category": "import",
+      "description": "快速将模型保存为旧版 SketchUp 格式。",
+      "keywords": [],
+      "license": "MIT",
+      "author": "Eneroth3",
+      "official": true,
+      "homepage": "https://github.com/Eneroth3/legacy-save",
+      "dependencies": []
+    },
+    {
+      "id": "solid-tools",
+      "name": "实体布尔工具",
+      "version": "3.0.1",
+      "category": "model",
+      "description": "SketchUp 实体布尔运算：并集、差集、交集与修剪。",
+      "keywords": [],
+      "license": "MIT",
+      "author": "Eneroth3",
+      "official": true,
+      "homepage": "https://github.com/Eneroth3/eneroth-solid-tools",
+      "dependencies": []
+    },
+    {
+      "id": "soap-skin-bubble",
+      "name": "起泡泡（Soap Skin & Bubble）",
+      "version": "1.0.8",
+      "category": "model",
+      "description": "在闭合/开放边线上生成张拉曲面（膜结构、异形顶）。",
+      "keywords": [
+        "起泡泡",
+        "qipaopao",
+        "曲面",
+        "qumian",
+        "soup",
+        "bubble"
+      ],
+      "license": "proprietary",
+      "author": "Josef Leibinger",
+      "official": true,
+      "homepage": "https://extensions.sketchup.com/en/content/soap-skin-bubble"
+    },
+    {
+      "id": "add-faces",
+      "name": "Add Faces 补面",
+      "version": "1.0",
+      "category": "model",
+      "description": "选中边线自动封成面，DWG 导入后快速修补。",
+      "keywords": [
+        "补面",
+        "bumian",
+        "封面",
+        "fengmian",
+        "addfaces"
+      ],
+      "license": "proprietary",
+      "author": "TIG",
+      "official": true,
+      "homepage": "https://sketchucation.com/plugin/1010-addfaces"
+    },
+    {
+      "id": "makefaces",
+      "name": "MakeFaces 全模型补面",
+      "version": "1.6",
+      "category": "model",
+      "description": "全模型自动补洞、闭合面、重三角化。",
+      "keywords": [
+        "补面",
+        "bumian",
+        "封面",
+        "fengmian",
+        "makefaces"
+      ],
+      "license": "proprietary",
+      "author": "The Sketchup Dude",
+      "official": true,
+      "homepage": "https://extensions.sketchup.com/extension/72ed89da-bc1a-43d4-a3d1-701d8a33f58b"
+    },
+    {
+      "id": "section-cut-face",
+      "name": "SectionCutFace 剖面填充",
+      "version": "8.0",
+      "category": "arch",
+      "description": "剖切面上自动生成填充面/线稿，可联动更新（下载量 16.8 万）。",
+      "keywords": [
+        "剖面",
+        "poumian",
+        "section",
+        "填充",
+        "tianchong"
+      ],
+      "license": "proprietary",
+      "author": "TIG",
+      "official": true,
+      "homepage": "https://sketchucation.com/plugin/744-sectioncutface"
+    },
+    {
+      "id": "fredotools",
+      "name": "FredoTools 工具集（免费）",
+      "version": "4.9",
+      "category": "model",
+      "description": "Fredo6 免费工具集：边线检查、废点清除、统一面朝向等。",
+      "keywords": [
+        "fredotools",
+        "清理",
+        "qingli",
+        "检查",
+        "jiancha"
+      ],
+      "license": "proprietary",
+      "author": "Fredo6",
+      "official": true,
+      "homepage": "https://sketchucation.com/plugin/907-fredotools",
+      "note": "依赖 LibFredo6（免费运行时）：https://sketchucation.com/plugin/903-libfredo6"
+    },
+    {
+      "id": "1001bit-tools",
+      "name": "1001bit 建筑工具（免费版）",
+      "version": "2.5",
+      "category": "arch",
+      "description": "一键生成楼梯、坡道、墙、门窗、屋顶椽条等建筑构件。",
+      "keywords": [
+        "1001bit",
+        "楼梯",
+        "louti",
+        "门窗",
+        "menchuang",
+        "建筑",
+        "jianzhu"
+      ],
+      "license": "proprietary",
+      "author": "Goh C H",
+      "official": true,
+      "homepage": "https://www.1001bit.com"
+    },
+    {
+      "id": "d5-livesync",
+      "name": "D5 渲染器同步插件",
+      "version": "latest",
+      "category": "render",
+      "description": "一键同步模型到 D5 渲染器，实时联动（渲染器本体免费）。",
+      "keywords": [
+        "d5",
+        "渲染",
+        "xuanran",
+        "同步",
+        "tongbu",
+        "render"
+      ],
+      "license": "proprietary",
+      "author": "D5 Render",
+      "official": true,
+      "homepage": "https://docs.d5render.com/workflow/sketchup/feature-introduction-or-d5-livesync-for-sketchup"
+    },
+    {
+      "id": "twinmotion-direct-link",
+      "name": "Twinmotion Direct Link",
+      "version": "latest",
+      "category": "render",
+      "description": "一键同步到 Twinmotion（Epic 免费渲染器）。",
+      "keywords": [
+        "twinmotion",
+        "渲染",
+        "xuanran",
+        "同步",
+        "tongbu"
+      ],
+      "license": "proprietary",
+      "author": "Epic Games",
+      "official": true,
+      "homepage": "https://www.twinmotion.com/plugins/sketchup-pro"
+    }
+  ],
+  "distribution": "public-core-official-links"
+}

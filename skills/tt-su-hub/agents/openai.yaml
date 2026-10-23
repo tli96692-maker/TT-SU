@@ -1,0 +1,4 @@
+interface:
+  display_name: "TT中枢 · 安装与维护"
+  short_description: "安装、排障与更新 TT中枢 SketchUp 插件，维护公开源码和发行流程"
+  default_prompt: "使用 $tt-su-hub 检查我的 TT中枢安装与版本，并帮助处理当前问题。"

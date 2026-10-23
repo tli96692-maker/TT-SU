@@ -1,0 +1,124 @@
+name: Core checks and draft release
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: 'Version tag matching the loader, for example v0.2.3-beta.1'
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+jobs:
+  validate:
+    runs-on: windows-2022
+    timeout-minutes: 20
+    env:
+      TT_RELEASE_REPOSITORY: ${{ github.repository }}
+      TT_RELEASE_TAG: ${{ inputs.tag }}
+      PLAYWRIGHT_BROWSERS_PATH: '0'
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - uses: ruby/setup-ruby@v1
+        with:
+          ruby-version: '3.2'
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: npm
+      - name: Install pinned browser tests
+        shell: pwsh
+        run: |
+          npm ci --ignore-scripts
+          if ($LASTEXITCODE) { exit $LASTEXITCODE }
+          npx playwright install chromium
+          if ($LASTEXITCODE) { exit $LASTEXITCODE }
+      - name: Offline Ruby contracts
+        shell: pwsh
+        run: ruby --disable-gems tests/run_all.rb
+      - name: Release maintenance helper
+        shell: pwsh
+        run: python -m unittest discover -s tests -p test_prepare_next_release.py
+      - name: Browser contracts (mock host, not native geometry)
+        shell: pwsh
+        run: npm run test:ui
+      - name: Build and verify Core package
+        shell: pwsh
+        run: |
+          ./tools/build-rbz.ps1 -Core -Repository $env:TT_RELEASE_REPOSITORY
+          if ($LASTEXITCODE) { exit $LASTEXITCODE }
+          $arguments = @('tools/create-release-manifest.py', '--repository', $env:TT_RELEASE_REPOSITORY)
+          if ($env:TT_RELEASE_TAG) { $arguments += @('--tag', $env:TT_RELEASE_TAG) }
+          python @arguments
+          if ($LASTEXITCODE) { exit $LASTEXITCODE }
+          python tools/verify-public-release.py --repository $env:TT_RELEASE_REPOSITORY --manifest dist/release-manifest.json
+          if ($LASTEXITCODE) { exit $LASTEXITCODE }
+          python tools/test-public-release.py
+          if ($LASTEXITCODE) { exit $LASTEXITCODE }
+      - uses: actions/upload-artifact@v4
+        with:
+          name: core-release-candidate
+          if-no-files-found: error
+          path: |
+            dist/su_zhongshu-core.rbz
+            dist/release-manifest.json
+            dist/SHA256SUMS.txt
+
+  draft:
+    if: github.event_name == 'workflow_dispatch'
+    needs: validate
+    runs-on: windows-2022
+    timeout-minutes: 5
+    permissions:
+      contents: write
+    env:
+      GH_TOKEN: ${{ github.token }}
+      TT_RELEASE_REPOSITORY: ${{ github.repository }}
+      TT_RELEASE_TAG: ${{ inputs.tag }}
+      TT_RELEASE_COMMIT: ${{ github.sha }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          name: core-release-candidate
+          path: dist
+      - name: Create a NEW private draft (never publish or overwrite)
+        shell: pwsh
+        run: |
+          $manifest = Get-Content -LiteralPath dist/release-manifest.json -Raw | ConvertFrom-Json
+          if ($env:TT_RELEASE_TAG -cne ('v' + $manifest.version)) { throw 'Tag mismatch' }
+          if ([string]::IsNullOrWhiteSpace($env:GH_TOKEN)) { throw 'Missing GitHub token; no release created.' }
+          $headers = @{
+            Authorization = ('Bearer ' + $env:GH_TOKEN)
+            Accept = 'application/vnd.github+json'
+            'X-GitHub-Api-Version' = '2022-11-28'
+          }
+          function Assert-ResourceMissing([string]$ApiPath, [string]$ResourceName) {
+            # Only a real 404 establishes absence. Auth, rate-limit, server and
+            # transport failures must stop instead of being treated as missing.
+            $response = Invoke-WebRequest -Uri ('https://api.github.com/' + $ApiPath) `
+              -Headers $headers -SkipHttpErrorCheck -TimeoutSec 30 -ErrorAction Stop
+            switch ([int]$response.StatusCode) {
+              200 { throw ($ResourceName + ' already exists; choose a new version. No overwrite performed.') }
+              404 { return }
+              default { throw ('Cannot confirm absence of ' + $ResourceName + ': GitHub HTTP ' + [int]$response.StatusCode) }
+            }
+          }
+          $encodedTag = [Uri]::EscapeDataString($env:TT_RELEASE_TAG)
+          Assert-ResourceMissing ('repos/' + $env:TT_RELEASE_REPOSITORY + '/releases/tags/' + $encodedTag) 'Release'
+          Assert-ResourceMissing ('repos/' + $env:TT_RELEASE_REPOSITORY + '/git/ref/tags/' + $encodedTag) 'Tag'
+          $arguments = @('release', 'create', $env:TT_RELEASE_TAG, '--repo', $env:TT_RELEASE_REPOSITORY,
+            '--target', $env:TT_RELEASE_COMMIT, '--draft', '--title', ('TT Hub ' + $manifest.version),
+            '--notes-file', 'docs/public-release-notes.md', 'dist/su_zhongshu-core.rbz',
+            'dist/release-manifest.json', 'dist/SHA256SUMS.txt')
+          if ($manifest.channel -eq 'preview') { $arguments += '--prerelease' }
+          gh @arguments
+          if ($LASTEXITCODE) { exit $LASTEXITCODE }

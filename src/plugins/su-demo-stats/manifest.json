@@ -1,0 +1,23 @@
+{
+  "id": "su-demo-stats",
+  "name": "模型统计",
+  "version": "0.2.1",
+  "min_su": "2024",
+  "author": "SU 中枢团队",
+  "license": "MIT",
+  "category": "script",
+  "description": "统计当前层级与整个模型（包含嵌套实例）的边、面、组和组件数量，并导出中文CSV或JSON报告。",
+  "keywords": [
+    "统计",
+    "tongji",
+    "stats",
+    "导出",
+    "daochu"
+  ],
+  "entry": "su-demo-stats.rb",
+  "command": {
+    "title": "模型统计",
+    "id": "model_stats"
+  },
+  "shortcut": "Alt+S"
+}

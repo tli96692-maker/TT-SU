@@ -1,0 +1,571 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>命令</title>
+<!--
+  SU 中枢 · 命令面板（SketchUp HtmlDialog 700×480，不可缩放）
+  设计基准：design-demos/direction-final.html（色彩排印系统 + 布局骨架）
+  回调契约：window.sketchup.*(参数?, requestId)，Ruby 注入 window.__onXxx(data, requestId)。
+    get_state() → {version, categories, plugins[], commands[]}
+    run_command(id) / open_panel()
+  交互：大搜索框自动聚焦；↑↓ 选择 / 回车 执行 / Esc 关闭；
+  空输入态 = 已配置快捷入口 + 最近使用 / 全部命令；无结果态 = 「未找到相关命令」+「到插件市场搜索」。
+  执行后记录最近使用（localStorage 键 suhub.recent，与常驻面板共享）并关闭窗口。
+  连接失败显示重试提示；仅显式 ?demo=1 使用演示数据。
+  零外部资源、单文件、file:// 可打开。
+-->
+<style>
+/* ============ 基础与变量（取自 direction-final.html 的色彩排印系统） ============ */
+*{box-sizing:border-box;margin:0;padding:0}
+:root{
+  --ink:#0E1621; --sub:#5A6B80; --faint:#64748B;
+  --line:#E5EAF0; --line-strong:#D5DCE5;
+  --bg:#F4F6F8;
+  --accent:#0B5BD3; --accent-weak:#E8F0FC;
+  --warn:#B45309; --warn-weak:#FDF1E6;
+  --ok:#178A50;
+  --shadow-float:0 2px 4px rgba(14,22,33,.10),0 12px 32px rgba(14,22,33,.16);
+  --mono:"SF Mono","JetBrains Mono",Consolas,"Roboto Mono",monospace;
+  --ui:-apple-system,BlinkMacSystemFont,"Segoe UI","PingFang SC","Hiragino Sans GB","Microsoft YaHei","Noto Sans CJK SC","Helvetica Neue",Arial,sans-serif;
+}
+[hidden]{display:none!important}
+html,body{height:100%}
+body{font-family:var(--ui);color:var(--ink);background:#FFFFFF;overflow:hidden;-webkit-font-smoothing:antialiased;text-rendering:optimizeLegibility;display:flex;flex-direction:column}
+::selection{background:rgba(11,91,211,.18)}
+::-webkit-scrollbar{width:8px}
+::-webkit-scrollbar-thumb{background:#C9D2DC;border-radius:4px;border:2px solid #FFF;background-clip:padding-box}
+
+/* ============ 搜索区 ============ */
+.q-search{display:flex;align-items:center;gap:12px;padding:16px 18px 14px;border-bottom:1px solid var(--line);flex:none}
+.q-search>.r-ico{width:18px;height:18px;color:var(--faint);flex:none}
+.q-input{flex:1;min-width:0;border:none;background:transparent;outline:none;font-family:var(--ui);font-size:18px;font-weight:600;color:var(--ink);letter-spacing:.01em}
+.q-input::placeholder{color:#97A3B2;font-weight:400}
+.q-count{font-family:var(--mono);font-size:12px;font-weight:600;color:var(--accent);background:var(--accent-weak);border-radius:11px;padding:4px 9px;white-space:nowrap;flex:none}
+.q-count b{font-weight:600}
+.q-clear{width:20px;height:20px;border-radius:5px;border:1px solid var(--line);background:#FFFFFF;display:grid;place-items:center;cursor:pointer;flex:none}
+.q-clear svg{width:10px;height:10px;color:var(--faint)}
+.q-clear:hover{border-color:var(--line-strong)}
+.kbd{font-family:var(--mono);font-size:12px;line-height:1;color:var(--sub);border:1px solid var(--line-strong);border-bottom-width:2px;background:#FFFFFF;border-radius:4px;padding:3px 6px;white-space:nowrap;flex:none}
+
+/* ============ 结果区 ============ */
+.q-body{flex:1;min-height:0;overflow-y:auto;overflow-x:hidden;padding:8px}
+.q-sec-head{display:flex;justify-content:space-between;align-items:center;padding:8px 10px 4px;font-size:12px;font-weight:600;color:var(--faint);letter-spacing:.08em}
+.q-sec-head .g-count{font-family:var(--mono);letter-spacing:0;font-size:12px;color:var(--faint);font-weight:400}
+.q-row{position:relative;display:flex;align-items:center;gap:12px;height:48px;padding:0 12px;border-radius:8px;margin-bottom:2px;cursor:pointer}
+.q-row .r-ico{width:20px;height:20px;color:#4A5A6C;flex:none}
+.q-row:hover:not(.sel){background:#F4F7FA}
+.q-row.sel{background:var(--accent-weak)}
+.q-row.sel::before{content:"";position:absolute;left:0;top:50%;transform:translateY(-50%);width:2px;height:28px;border-radius:2px;background:var(--accent)}
+.q-row.sel .r-ico{color:var(--accent)}
+.q-row.sel .q-name{color:var(--accent)}
+.q-row.exec{background:#EAF6EE}
+.q-row.exec .q-name{color:var(--ink)}
+.q-name{font-size:15px;font-weight:600;color:var(--ink);letter-spacing:.01em;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.q-tag{font-size:12px;color:var(--sub);border:1px solid var(--line);background:#FFFFFF;border-radius:4px;padding:1px 7px;white-space:nowrap;flex:none}
+.q-hint{margin-left:auto;font-family:var(--mono);font-size:12px;color:var(--faint);white-space:nowrap;flex:none}
+.q-keys{margin-left:auto;display:flex;gap:3px;align-items:center;flex:none}
+.key{font-family:var(--mono);font-size:12px;line-height:1;color:var(--sub);border:1px solid var(--line-strong);border-bottom-width:2px;background:#F7F9FB;border-radius:4px;padding:3px 6px;white-space:nowrap;min-width:18px;text-align:center;font-variant-numeric:tabular-nums}
+.q-row.sel .key{border-color:#C9D9F2;background:#FFFFFF;color:var(--accent)}
+.q-empty{display:flex;flex-direction:column;align-items:center;justify-content:center;min-height:220px;padding:16px;text-align:center}
+.q-empty-ico{width:32px;height:32px;color:#C4CDD8;margin-bottom:10px}
+.q-empty-t{font-size:14px;color:var(--sub)}
+.q-empty-t b{color:var(--ink);font-weight:600}
+.q-empty-s{font-size:12px;color:var(--faint);margin-top:6px}
+.q-market{margin-top:14px;border:1px solid var(--line-strong)}
+.q-market:hover{border-color:var(--accent)}
+
+/* ============ 底部提示条 ============ */
+.q-foot{display:flex;align-items:center;height:44px;padding:0 16px;border-top:1px solid var(--line);background:#FBFCFD;flex:none}
+.q-hints{display:flex;gap:14px;align-items:center}
+.hk{display:flex;align-items:center;gap:6px;font-size:12px;color:var(--sub);white-space:nowrap}
+.hk em{font-style:normal}
+.hk .key{padding:2px 6px}
+.q-demo{margin-left:auto;font-size:12px;color:var(--faint);background:#F1F4F7;border:1px solid var(--line);border-radius:4px;padding:2px 6px;white-space:nowrap}
+.q-action{margin-left:12px;font-family:var(--mono);font-size:12px;color:var(--faint);white-space:nowrap;overflow:hidden;text-overflow:ellipsis;max-width:42%}
+.q-action.flash{color:var(--accent)}
+
+/* ============ 轻提示 ============ */
+.toast{position:fixed;left:50%;bottom:56px;transform:translateX(-50%) translateY(4px);background:var(--ink);color:#FFFFFF;font-size:12px;line-height:1.5;padding:8px 14px;border-radius:6px;box-shadow:var(--shadow-float);opacity:0;transition:opacity .18s ease-out,transform .18s ease-out;pointer-events:none;z-index:50;max-width:88%;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.toast.show{opacity:.97;transform:translateX(-50%) translateY(0)}
+.toast{white-space:normal;overflow-wrap:anywhere}
+.q-empty button{margin-top:14px;padding:6px 12px;border:1px solid var(--line-strong);background:#FFF;border-radius:5px;color:var(--accent);cursor:pointer}
+</style>
+</head>
+<body>
+
+<header class="q-search">
+  <svg class="r-ico" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" aria-hidden="true"><circle cx="7" cy="7" r="4.6"/><path d="M10.5 10.5 14 14"/></svg>
+  <input id="qInput" class="q-input" role="combobox" aria-controls="qBody" aria-expanded="true" aria-autocomplete="list" placeholder="输入命令名或拼音首字母，如「qc」" aria-label="搜索命令" autocomplete="off" spellcheck="false" autofocus>
+  <span class="q-count" id="qCount" hidden>匹配 <b>0</b> 个命令</span>
+  <button class="q-clear" id="qClear" title="清空" aria-label="清空" hidden><svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"><path d="M6.2 6.2l3.6 3.6M9.8 6.2 6.2 9.8"/></svg></button>
+  <span class="kbd" aria-hidden="true">Esc</span>
+</header>
+
+<div class="q-body" id="qBody" role="listbox" aria-label="命令结果"></div>
+
+<footer class="q-foot">
+  <div class="q-hints">
+    <span class="hk"><span class="key">↑</span><span class="key">↓</span><em>选择</em></span>
+    <span class="hk"><span class="key">回车</span><em>执行</em></span>
+    <span class="hk"><span class="key">Esc</span><em>关闭</em></span>
+  </div>
+  <span class="q-demo" id="qDemo" hidden>演示数据</span>
+  <span class="q-action" id="qAction">执行：—</span>
+</footer>
+
+<div class="toast" id="toast" role="status" aria-live="polite" hidden></div>
+
+<!-- 极简线性 SVG 图标库（16×16，1.5px 描边，取自 direction-final.html） -->
+<svg width="0" height="0" style="position:absolute" aria-hidden="true">
+  <defs>
+    <symbol id="i-search" viewBox="0 0 16 16"><circle cx="7" cy="7" r="4.6"/><path d="M10.5 10.5 14 14"/></symbol>
+    <symbol id="i-clock" viewBox="0 0 16 16"><circle cx="8" cy="8" r="5.6"/><path d="M8 5v3.2l2.2 1.3"/></symbol>
+    <symbol id="i-folder" viewBox="0 0 16 16"><path d="M1.8 4.2c0-.9.7-1.6 1.6-1.6h2.8l1.5 1.7h4.7c.9 0 1.6.7 1.6 1.6v5.9c0 .9-.7 1.6-1.6 1.6H3.4c-.9 0-1.6-.7-1.6-1.6z"/></symbol>
+    <symbol id="i-play" viewBox="0 0 16 16"><circle cx="8" cy="8" r="6"/><path d="M6.6 5.4v5.2l4.3-2.6z"/></symbol>
+    <symbol id="i-server" viewBox="0 0 16 16"><rect x="3" y="3" width="10" height="4.4" rx="1"/><rect x="3" y="8.6" width="10" height="4.4" rx="1"/><path d="M5.4 5.2h5.2M5.4 10.8h5.2"/></symbol>
+    <symbol id="i-docplus" viewBox="0 0 16 16"><path d="M3.4 2.2h6.2L12.8 5.4v8.4H3.4z"/><path d="M9.6 2.2v3.2h3.2M8 8.2v3.6M6.2 10h3.6"/></symbol>
+    <symbol id="i-store" viewBox="0 0 16 16"><path d="M2.6 6.4 3.8 3c.2-.6.7-1 1.3-1h5.8c.6 0 1.1.4 1.3 1l1.2 3.4M2.6 6.4v6.2c0 .8.7 1.4 1.5 1.4h7.8c.8 0 1.5-.6 1.5-1.4V6.4M2.6 6.4c0 1.3 1.1 2.3 2.4 2.3s2.4-1 2.4-2.3c0 1.3 1.1 2.3 2.4 2.3s2.4-1 2.4-2.3"/></symbol>
+    <symbol id="i-null" viewBox="0 0 16 16"><path d="M6.2 6.2l3.6 3.6M9.8 6.2 6.2 9.8"/><circle cx="8" cy="8" r="5.4"/></symbol>
+    <symbol id="i-cube" viewBox="0 0 16 16"><path d="M8 2.4 13.4 5.4v5.2L8 13.6 2.6 10.6V5.4Z"/><path d="M2.6 5.4 8 8.4l5.4-3M8 8.4v5.2"/></symbol>
+    <symbol id="i-push" viewBox="0 0 16 16"><path d="M4.6 2.2h6.8v4.4H4.6zM6 13.8l2-3.2 2 3.2M8 6.6v4"/><path d="M4.4 10h7.2"/></symbol>
+    <symbol id="i-fillet" viewBox="0 0 16 16"><path d="M12 2.2H4.6c-.8 0-1.4.6-1.4 1.4v7.6c0 .8.6 1.4 1.4 1.4H12"/><path d="M7.6 2.2v1.9a3.3 3.3 0 0 0 3.3 3.3h1.9"/></symbol>
+    <symbol id="i-group" viewBox="0 0 16 16"><path d="M2 3.5C2 2.7 2.7 2 3.5 2h9c.8 0 1.5.7 1.5 1.5v5c0 .8-.7 1.5-1.5 1.5h-2.7V13H3.5c-.8 0-1.5-.7-1.5-1.5z"/><path d="M9 6h3v3"/></symbol>
+    <symbol id="i-chart" viewBox="0 0 16 16"><path d="M3 13.4h10M5 13V8M8.5 13V4.6M12 13v-6"/></symbol>
+    <symbol id="i-rename" viewBox="0 0 16 16"><path d="M7.4 12.6H2.6M5.4 2.8h2.2v7.8M6.5 2.8 3.4 11.4"/></symbol>
+    <symbol id="i-drop" viewBox="0 0 16 16"><path d="M8 2.4s4.2 4.6 4.2 7.6A4.2 4.2 0 0 1 8 14.2 4.2 4.2 0 0 1 3.8 10c0-3 4.2-7.6 4.2-7.6"/></symbol>
+    <symbol id="i-spray" viewBox="0 0 16 16"><circle cx="7.4" cy="7.4" r="4.4"/><path d="M4.8 3.2l.8-.9M9.8 3l.9-.8M3 6.4l-1.2-.1M3 9.6l-1.2.1M11.6 6.4l1.2-.1M12 9.6l1.2.1"/></symbol>
+    <symbol id="i-cylinder" viewBox="0 0 16 16"><ellipse cx="8" cy="3.4" rx="4.4" ry="1.9"/><path d="M3.6 3.4v9.2c0 1 2 1.9 4.4 1.9s4.4-.9 4.4-1.9V3.4"/></symbol>
+    <symbol id="i-slice" viewBox="0 0 16 16"><path d="M8 2.2 13 4.8v6.4L8 14 3 11.2V4.8z"/><path d="M3 4.8 8 7.4l5-2.6M8 7.4V14"/><path d="M2 8.6 13 11.6" stroke-dasharray="2.4 1.8"/></symbol>
+    <symbol id="i-terrain" viewBox="0 0 16 16"><path d="M2 5.6c1.8 0 1.8 2.4 3.6 2.4S7.4 5.6 9.2 5.6s1.8 2.4 3.6 2.4M2 10.6c1.8 0 1.8 2 3.6 2s1.8-2 3.6-2 1.8 2 3.6 2"/></symbol>
+    <symbol id="i-door" viewBox="0 0 16 16"><rect x="2.6" y="2.6" width="10.8" height="10.8" rx=".6"/><path d="M6 5.4h5.4"/><path d="M5.2 2.6v10.8M5.2 7.4l2.4 1.6"/></symbol>
+    <symbol id="i-curtain" viewBox="0 0 16 16"><path d="M3 2.4v11.2M6.6 2.4v11.2M10.2 2.4v11.2M13.8 2.4v11.2"/></symbol>
+    <symbol id="i-grid" viewBox="0 0 16 16"><rect x="2.2" y="2.2" width="4.6" height="4.6"/><rect x="9.2" y="2.2" width="4.6" height="4.6"/><rect x="2.2" y="9.2" width="4.6" height="4.6"/><rect x="9.2" y="9.2" width="4.6" height="4.6"/></symbol>
+    <symbol id="i-trash" viewBox="0 0 16 16"><path d="M3 4.2h10M6 4.2V3c0-.6.4-1 1-1h2c.6 0 1 .4 1 1v1.2M4.2 4.2l.7 8.6c0 .9.7 1.6 1.6 1.6h3c.9 0 1.6-.7 1.6-1.6l.7-8.6M6.8 7v4.6M9.2 7v4.6"/></symbol>
+    <symbol id="i-import" viewBox="0 0 16 16"><path d="M8 2.8v7M5.4 7.4 8 10l2.6-2.6M3 12.6c-.6 0-1 .4-1 1v1.8c0 .6.4 1 1 1h10c.6 0 1-.4 1-1v-1.8c0-.6-.4-1-1-1"/></symbol>
+    <symbol id="i-layers" viewBox="0 0 16 16"><path d="M8 2.6 14 5.4 8 8.2 2 5.4Z"/><path d="M2 8.6 8 11.4 14 8.6M2 11.8 8 14.6 14 11.8"/></symbol>
+  </defs>
+</svg>
+
+<script src="js/command-outcomes.js"></script>
+<script>
+(function(){
+'use strict';
+
+/* ============ 工具函数 ============ */
+var $=function(s){return document.querySelector(s)};
+function esc(s){
+  return String(s==null?'':s).replace(/[<>&"']/g,function(ch){
+    return {'<':'&lt;','>':'&gt;','&':'&amp;','"':'&quot;',"'":'&#39;'}[ch];
+  });
+}
+function ico(id){return '<svg class="r-ico" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><use href="#'+id+'"/></svg>';}
+
+/* ---------- 拼音首字母（内嵌表，覆盖 U+4E00..U+9FFF） ---------- */
+var PY_INITIALS = 'ydkqsxhwzssxqbymgcczqpssqbycdscdqldylybsgjgypzjjfgcclzzbwdwzjljpfyynwjjtmyyzwzhflyppqhgccyhymjqyxxgjx0sdsjnjjsmhml0rxyfsnqsyzzqzgqllyjlgyzssecykyyhqwjssggyxyqyjtwkdjhychmyxjtlxjyqbyxdldwrrjjwysrldzjpcbzjjbrcfjlbczstzfxxthtrqgybdlyccscymmrfcyqzpwwjjyfcrwfdfzqpyddwyxkyjawjffxjpdftzyhhycyswccyqsclcxxwzcxnbgnnxbxlzsqsbsqpysyzdhmdzbqbzcwdzzyytzhbtsyyfzgntnxqywqykbphglxgybfmjebjhhgqtjcysxstkzglyckglysmzxyalmeldccxgzyrcxsdltjzcqkcnnjwhjczzhqljststbnxbtyxceqxgkwjyflzqlyhjqspsfxlfpbysxxxydcczylllsjxfhjxpjbcffyabyxbhczbjyclwlczggbtssmdtjcxpthyqtgljscjfzkjzjqnlzwlslhdzbwjncjzyzsqnycqyrzcjjwybrtwpyftwexcskdzctbxhyzcayjxzcfbzzmjyxxcdczottbzljwfckszsxfyrlnyjmbdthjxsqqccsbxrytsyfbjdztgbcnclcyzzpsacyzqscjcshzqydxlbpjllmqxtydzxsqjtzpxlcglqczwjbhctdjjsfxyejjtlbgxsxjmyjjqpfzasyjncydjxkjcdjszcbartcclnjqmwnqnclllkbybzzsyhqcltwlccrshllzntylnewyzyxczxxgdkdmtcedeqtsyys0d0d00sd0j0hrwnqlybglxhlgtgxbqjdz0yjsjyjcjmrnymgrcjczgjmzmgxmmryxkjnymsgmzzymklfxmbdtgfbhcjykylpfmdxlqjjsmtqgzsjlqdldgjycalcmzcsdjllnxdjffffjczfmzffpfkhkgdpkxktacjdhhzdddrrcfqyjkqccwjdxhwjlyllzgcfcqdsmlzpbjjplsbcjggdckkdezsqcckjgcgkdjtjllzycxklqccgjcltfpcqczgwbjdqydjjbyjhsjdzwgfsjgdkccctllpspkjgqjhzzljplgjgjjthjjyjzczmlzlyqbgjwmljkxzdznjqsyzmljlljkywxmkjlhskjgbmclyymkxjqlbmclkmdxxkwyxwslmlpsjqjjqxyqfjtjdxmxxllcrqbsyjbgwy0xggbcyxpjtgpepfgdjgbhbncfjyzjkjkhxqfgqzkfhygkhdkllsdjjxpqykybnqsxqnszswhbsxwhxwbzzxdmndjbsbgbbzklylxgwxjjwyqzmywsjqlcjxxjqwjeqxscwetlzhlyyysdzpyqyzcmtlshtzcfycyxyljsdcjjagyslcqlyyysglrqq0ldxzsccccadycjysfsgbfrlszqsbxjpsjwsdrckgjlgtkzjzbdktcsyqpyhstcldj0hmxmcgxyzhjddtmhltxzxylymohyjcltyfpqqjbfbdfehthsqhzywwcnxxcdwhhwgyjlegwdqcwgfjhcsntfydolbywhqwesjpwnmlrydzsztxyqpzgzwxhnxpyxshmdqjxztdppbfyhzhhjyfdzwkgkzbldntsxhqeegzdylzmmzyjzkszxkhkhtxexxwylyapsthxdwhzydpxagkydxbynhxkd0jnmyhylpmgocslnzhkxxlpzzlbmlsfbhhgcgyyggbhscyajtdwlxtzqcwzydqdqm0gd0llszhlsjzwfjhqswscelqajynytlsxthazgkzzsdhlacqzwwcsgqqtddyzbcchyqzflxpslzqgpzsznglydqtbdlxjtctajdkywnsyzljhhdzcwnhyzyomhychhhxhjkzwsxhdyxlyscqydpclyzwmyp0kxyjlkzhtyhsxqsysgxysmchktscrswjbwxsgzjlwwschs0hsqnhzsngndaqtbaalzzmsstdqjcjktscjaxplggxhhgoxzcxpdmmhldgtybysjmxhmrzplxjzckzxshflqxctdhxezfchzccdjtcjyxqhlxdhypjqxnlsyydzozjnyxqezysjyayjkypdgxddxsppyzndlthrhhydxzjjhtcxmctlhbynyhmhzllxnxmylllpdcppxhmxdkycyrdltxjchhznxzlcclylnzsxzjyzlnn0lwhyqsnjhxynttdkyjpychhyegkcwtwlgqrlggtgtygyhpyhylqyqgcwyqkpyyyttttlhyhlltyttsplkyzwgywgpydqqzzdqxskcqnmjjzzbxyqmjrtfbbtkhzkbjdjjkdjjtlbwfzpptkqtztgpdgntpjyfalqmkgxfdclzfhzclllladpmxdjhlcclgyhdzfgyddgcyyfgydxkssebdhykdkdkhnaxxybpbyyhxccgabdqyjxdmljcyqzllpchbsxgjyndybyqspqwjlzkcddtaccbxzdyzypjzqsjnkktknjdjgyepgtlfyqkasdntcyhblgdzhbbydmjregkzyheyybjmcdtyfzjjfgcjpljhldwxjjkytcyksssmtwcttqzlpbszdtwzxgzagyxtywxlhlcpbclloqmmzsslcmbjqszzkydczxgqjdsmcytzqqlwzqzxssfpktfqmddzdsddtdwfhtdyzjaqjqkypbdjyyxtljhdrqxxxhaydhrjlklytwhllrllrcxylbwsrszzsymkzzhhkyhxksmcsyzgcjfbzbsqlfcxxxnxkxwymsddyq0ggqmmyhcdcttfgyyhgstttybykjdhkyjbelhdypjqnfxfdqkzhqksbyjtzbxhfdxbdaswpawajldyjsfhbldnndnqjtjnchxfjsrfwhzfmdrfjyhwzpdjkzyjymfcyznynxfbytfwfwygdbnzzzdnytxzemmqbsqehxfzmbmflzzsrsymjgsxwzjsprydjsjgxhjjgmjjynzzjxhgjkymlpeyycsysgqzswhwlyrjlpxslcxmfswwkcctnxnynpnjszhdzeptmmwywxyysywlxjqzqxzdclaeelmcpjpclwbxsqhfwwtffjtnqjhjqdxhwlbyzcfjlnlhyyjldxhhycstdywnrjtxywdrmdrqhwqcmfjdyzmhmayxjwmyzqtxtlmrspwwchajbxtgcypxyyrrclmpamgkqjszyjrmyjsnxtplnbappypylxmyzkynldgyjzczhnlmzhhanqmpgwqtzmxxmllhgdzxyhxkrxycjmffxyhjfsbssqlhxndycannmtcjcyprrnytyqnyymbmsxndlylysljnlxysxhmllyzlzjjjkyzzcsfbzxxmstbjgnxyzhlsnmcqscyznfzlxbrnnnylmnrtgzqysatswryhyjzmzdhzgzdwybsscskxsyhytsxgcqgxzzbhyxjscrhmkkbsczjyjymkqhzjfnbhmqhysnjnzybknqmcjgqhwlsnzswxkhljhyybqcbfcdsxdldspfzfskjjzwzxsddxjseeegjscssmgclxxhywyllylwwwgydkzjgggtggsycknjwnjpcxbjjtqtjwdsspjxzxnzxwmelptfsxtllxcljxjjljsxctnswxlahhhyqrwhsycsqrybyaywjejqfwqcqqcjqgxaldbzzyjgkgxpltjyfxjltpadkyqhpmatldpdzkxmtxybhklefxdleegqtymsawhzmlftwyqxlyjzljeeyxbqqffnlyxrdsctgjgxywlkllxqkcctlhjlqmkkzgcyygllljdzgydhzwxpysjbzjdzgyzzhywyfqytyzszyezklymhjjhtsmqwyzlkyywzcsrkqyqltcxwcdrjklwskzwbdcqyncjsrszjlkcdcdtlzzzacqqwzddxyplxcbqjylzlllqdtzjjyjyjzyxnyyynxjxkgdazwyrdljyyyrjlglldyxjcykywnqcclddnyyykyckczhjxcclgzqjgjwggcqqjysbzzxyjxj0xjfzbsbdsfnsfpzxhdwztdmpptflzzbzdmyypqjrsdzsqzsqxbdgcpzjwdwcsqzgmzhzzmwwfybpdgphtmjthzsmmbgzmbzjcfzhfcbbzmqcfmbcmcjxlgpnjbbxgyhyyjgptzgzmqbqdcgybjxlwzkydpdymgcftpfxyztzxdzxtgkmtybbclbjaskytssqyymscxfjeglsllszbqjjjaklyldlycctsxmcwfgkkbqxlllljyxtyltyxytdpjhnhgnkbyqnfjyyzbyyessessgdyhfhwtcjbsdzjtfdmxhcnjzymjwsrxjdzjqpdqbbsdjggfbkjbxdgqhmgwjjjgdllthzhhyyyyhhsxwtyyyccbdbpypzyccztjpzywcbdlfwzcwjdxxhyhlhwczxjtcclcdpxdjczczlyxjjsjbhfxwpywxzptdzzbdzcjhjhmlxbqxxbylrddgjrrctttgysczwmxfytmmzcwjwxjywcskybzqccttqnhxnkxxkhkfhtswoccjybcmpzzykbnnzpbthhcdlsyddytyfjpxyngfxbyqxcbhxcbsxtyzdm0ysnxsxlhkmzxlthdhkghxxsshqyhhcjyxglhzxcsnhekdtgqxqypkdheqtykcnymyyypkqyytjxzlthhqtbyqhxbmyhsqckwwyllhcyylnneqxqwmcfbdccmljggxdqktlxkgnqcdgzjwyjjlyhhjtttnwchhxcxwheszjydjccdbqcdgdnyxzdhcqrxcbmztqcbxwgqwyybxhmbymyqdyecmkkyaqyngycslfykkqgyssqyshjgjcnxkzycxsbkyxhyylctycxqthysmgscpmmgcccccmtztasmgqzjhklosqylswtmqsyqkdzljqqyplcycztcqqpbbqjzclpkhqcyyxxdtdddsjcxffllchqxmjlwcjcxtspycxndtjshjwxdqqjckxyamylsjhmlalygxcyydmamdqmlmcznnyybzkkyflmchcmlhxrcjjhsylnmtjggggywjxsrxcwjgjqhqzdqjdzjjzkjkgdzqgjjyjylxzxxcdqhhhestmhlfsbdjsyyshfyssczqlpbdrfrztzdkyyhsctgkwdqzrkmsynbcrxqbjyfbxpzzedzcjykbcjwhyjbqdzywnyszptdkzpfpbaztklqyhbbzpnbptyzzybhnydcpjmmcycqmzjfzzdcmnlfpbplngqjtbttajzpzbbdnjkljqylnbzqhksjznggqsczkyxchpzsnbcgzkddzqanzgjkdrtlzldwjljzlyztxndjzjhxyatncbgtzcsskmnjbjytsrwxcpjwjjtkhtzplbhsnjzsyjbwbzyzlstlsbjhdwwqpslmmfbjdwajyzccjtbnnrzwqxcdslqgdsdpdzhjtqqpsqlyyjzlgnhszlctcbjtktyczjtqkbpjlgmjzdmcsgpynjzjjyyknhrpwszxmtncszzyxhbyhyzaxywkcjtllckjjtjhgcxsxyqyczbywblwqcglzgjgqrqcczssbcrbcskydznljsqgxssjmecnstjtpbdlthzwhqwqtzexnqczgwesgssbybstscsjccgbfsdqszlccglllzghzqthczmjgyzaznmckcstjmmzckbjygqljyjppldxrgzyxccsnhshhdznlzhzjjcddcbcjxlbfqbczzwpqdnhxljcthqzjgylnlszzpcjdscqqhjqkdxqpbajyemsmjtzdxlcjyryynhjbngzzkmjxltbsllrtpylcsznxjhllhyllqqzqlxymrcwcxsljmczltzldwdjjllnzggqxppskygyggbfzpdkmwghcxmcgdxjmcjsdycabxjdlnbcddygskydqtxdjjyxmsaqazdcfslqxyjsjzylblxxwxqqzbjzlfbblylwdsljhxjyzjwtdjcyfqzqzzdzsxzzqlzcdzfchysplmpqzmlpplffxjjnzzylsj0yqzfpfzksywjjjhrdjzzxtxxglghtdxcskyswmmtcwybazbjkshfhgcxmhfqhyxxyzftsjyzbxyxpzlchmzmbxhzzssyfdmncwdabazlxktcshhxkxjjzjsthygxsxyyhhhjwxkzxssbzzwwhhcwtzzzpjxsnxqqjgzyzawllcwxzfxxyxyhxmkyyswsqmnjnaycyspmjkhwcqhylajjmzxhmmcnzhbhxclxtjpltxyjhdyylttxfszhyxxsjbjyayrsmxyplckdlyhlxrlnllstyzyyqygyhhsccsmzztzcxhyqfbyyrpfflfqtntszlljmhwtzjqyzwtllmlm0wmbzss0zrbpdddlqjjbxccsrzqqygwcsxfwzlxccrstdzmcyggdyqsgtjmwljmymmsyhfbjdgyxccpshxnzcsbsjwjgjmppwaffyfnxhydxzylremzgzcyhsszdlljcsqfzxxkpsxzgxjjjbmyyysnbtylbnlhpfzdcyfbmgqrrmsszxysgtznnydzzcdgbjafjbdknzblcsszbsgcycjszlmlrzzbzzldl0llysxsqcqlyxzlsgkbrxbrbzcycxzjzeeyfgklzlyyhgzsgzlfjhgtgwkraajyzkzqtsshjjxdcyz0yjlzyrzdqqhgjzxsscbtgjbbfrtjxllfqwjgslqtymblpzdxtzagbdhzzrbgjhwnjtjxlkscfsmwlsdqysjtxkzscfwjlbxfczlljzllqblcqmqqcgcdfpbbhzczjlpyygjdtgwdqfczqyyyqysrclqzfklzzzgffcqnwglhjycjjczlqzzyjbjzzbpdccmhjgxdqdgdlzq0fgpsytsdyfwwdjzjyzxyycjcyhzwpbygxrylybhkjksfxtjjmmckhlltnyymsxxyzpdjjycsycwmdjjkqyrhllqxpsgtlwycljscbxjyzfnmlrgjjtyzbsyzmsjyjhgfzqmsyxrszcwtlrtqzsstkxgqggsptgcdnjsgcqcqhmxggztqydjjzdlbzsxjlhrqgggthqscpyhjhhgnygkggcmjdzllcclxqsftgzslllmlcskctbljzzszmmnytpzsxqhjcjyqxyexzqzcpshgzzysxcdfgmwqrllqxrfztlystctmjcsjjthjnxtnrztzfqrhqgllgcxszzjdjlxcytsjtlnyxhszxcgjzyqpylfhdjsbpcczgjjjqzjqdybssllcmyctmqtbhjqnnygjynqyqmzgcjkpdcgmyzhqllsllclmholzgdylfzsljcqzlylzcjeshnyllqxgjxlyjyyyxnbcljsswcqqcjyllcldqyllzllbnylgqchxyyqoxccqkyjxxhyklksxeqqxcqkkkkcsgyxxyqxygwtjohthxpxxxxslcyeychzzcbwqbbwjqzscszsslzylgdesjzmmymcytsdsxxscjpqqsqylyfzychdjdzywcbtjsycjkcyddjlbdjjsodzyqyskkxxdhhgqjyohdyxwgmmmajdybbbppbcmhcbljzsmtxerxjmhqdstpjdcbssmsssthjtslmmtrcplzszmlqdsdmjmqpnqdxcfynnfsdqqyxhyaykqyddlqyyysszbydslntfgtzqbzmchdhczcwftxtmqqsphqwwxsrgjcwtjtzzqmgwjjrjhttjbbgwzfxjhnqfxxqywyyhyscdydhhqmnmtmmchbszppzzgpmzfollcfwhmmsjzttthlmyffytzzgzyskjjxqyjzqbhmbzclyghgfmshpcfzsnclpbqsnjyzslxjfpmtyjygbxlldlxpzjypjyhhzcywhjylsjexfsszywxkzjlladyslymqjpwxxhxsktqjezrpxxzghmhwqpwqlyjjqjjzszcfkjlchhnxjlqwzjhbmzyxbdhhypylhlhlgfwlcfyytlhjjcjmscpxstkpnhjxsntyxxtestjctlsslstdlllwwyhdhrjzsfgxssyczykwhtdhwjslhtzdqdjzxxqggyltzphcsqfzlnjtclzpfstpdynylgmjllycqhynsbchylhqyqtmzybbywrfqykjsyslzdyjmpxyyssrhzjnyqtqdfzbwwtwwrxcwhgyhxmkmyyyhmsmzhngcepmlqqmtcwctmhpxjpjjhfxyyzsjzhtybmstsyjdtqqqytlhynbyqzlcxcnzwsmylkfjxlwgbypjytysylymzcktdwlgsmzsylmpwlzwxwqzssazsyxyrhssntsrapccpwcmgdhhqzdzxfjhgzttsbjhgyzlzysmyclllybtyxhbbzjkssdmalhhycfygmqypjycqxjllljgclzgqlycjcctotyxmtmshllwcgfxymzmklbszzcxhhjyslctyjcyhxsgyxckxlzwpyjpdhjwpjpwsqqxlxxdhmrslzcyzwttcxkystzshbsccstplwsscjchjlcgcjssphylhfhhxjsxallnylmzdhzxylsxlwzykcldyahzcmgdyspjtqjzlngjfsjshctsdszlblmssmnyymjqbjhrcwtyydchqljapzwbgqybkfcmjwlzllyylszydwhxpsbcmljpscgbhxlqhyrljxyswxhxzlldfhlslymjljyflyjycdrjlfsyzfsllcqyqfgjyhyszlylmstdjcyhbzllnwlxxygyyhhmgdhxxhhlzzjzxczzzcyqzfnjwpylcpkpyypmclqkdgxzggwqbdxzzkzfbxxlzxjtpjpttbytszzdwslchzhsltjxhqlhyxxxywzyswtmzkhlxzxzpyhgchkjfsyh0tjrlxfjxptztwhplyxfcrhxshxkjxxyhzqdxjwylhyhmjdbflkhtxcwhcfwjzfpqrxqxzyyyjygrpxgscsxngqchkzdxhflxxhjjbyzwtsxnncyjjymswyjqrmhxzwfqsylzjzgbhynshbgttcsebhxxwxyhhxyxxsqyxmlywrgyqlxbbcljsylpsytjzyhyzawlhorjmksczjxxxyxchcytryxqjddsjfslyltsffyxlmtyjmzjyyyxltzcsxqzlhzxlwyxzhdnlxxhxjcdyhlbrlmbrllaxksllljlyxxlycrylcjcgqcmtlzllcyzzpzpcyawhjjfybdyyzsepckzdqyqpbpcjpdcyzbdbbcyydycnnpjmtmlrmfmmgwygbsjgyksmdqqqztxmkqwgxllpjgzbqcdjjjfpkjkcxbljmswmdtqjxldlppbxcwkcqqqfqjczhgzgmykphyyhzykndkzmbpjyspxthlfpnyygxjdbkxnhhjhzjxstrstldxskzysybmxjlxyslbzyslhxjpfxbqnbylljqkygzmcyzzymccsl0lhzgwfwyxzmwcxtynxjhbyymcysbmhysmhdyshqyzchmjjmzcaahsfjbbhplxtylsxsdjgjdhkxxtxxnbhnmlngsltxmrhnlxqjxmzslyswqgdlbjhdcgjyqycmhwfmjybbbyjmjwjmdpwhxqldyapdfxxbcgjspckrssyzjmslbzzjfljjjlgxzgyxyxlszqyxbexyxhgcxbpldyhwecdwwcjmbtxchxyqxllxflyxlljlssfwdpzcmyjclmswtszbchqekcqbwlcgydblqppqzqfjqdjhymmcxtxdrmjwrhxcjzclqxdyynhyyhrslsrsywwzjymtltllgtqcjzyabtckzcjyccqljzqxalmzyyyzlwdxzxqdllqshgpjfjljhjabcqzdjgthhsstcyjlbswzlxjxrwgldlzrlzqtgsllllzlymxqgdzhgbdbhzpbrlw0x0bpfdwo000hlypcbjcc0dwbzpbzz0cyqxldomzblzwpdwyygdstthcsqsccrsssyslfybbntyjsydfndpthtzzmbbmxlcmyffgtjjqwftmdpjwdnlbzxmmczgbdzlqlfyfhssmjylsdchdzjwjcctljcldtljjcpddpjdsszynndbjlggjzxsxnlycybjjqycbylzcfzppgkcxzdzfztjjfgsjxzbnzyjqttyjwhtyzzhymdjxttmpxsplzcdwslshxybzgtfmmcjtacbbmgdkwycyzcdszzyhflyctygwhkjyylsjcxgywjcbhlcsnddbtzbsclyzczzssqdllmqyyhfllqllxfdyhabxggnywyypllsdldllbjcyxjzmlhljdxyyqytdlllbbgbfdfbbqjzzmdpjhgclgmjjpgaehhbwcqxaxhhhzchxyphjaxhlphjpgpzjqcqzgjjzzgzdmqyybdzphyhybwhazyjhykfgdpfqsdlzmljxjpgalxzdaglmdgxmmzqyxxdxxpfdmmssympfmdmmkxksyzyshdzkjsysmmzzzmsydnzzczxbplgtmddnmxckjmztyymzmzzmsqhhdccjemxxkljstgwlsqlyjzllsjshdbbmhnlyjczyhmxxhhzcjmdhxtkgrmxfwmcgmwkdcksxqmmmfzzydkmsclcmpcgmwrpxqpzdsslcxkyxtwlgjyahzjgzqwcsnxyhmmpmlkjxmhlmlgmxctkzmjjyszjsyszhsyjzjcdajzybsdqjzgwzkgxfkdmsdjlfmexkzqkjpeypzyszcdwyjffmzjykttdzzefmzlbnpplplpbpszalltylkckqzkgenqlwalkxydpxlhsxqqwq0kxqclhyxxmlyccwlymqysky0hlcjnszkpyzkcqzqljbdmdjhlasqlbydwqlwdnbqcryddztjybkbwszdxdtnpjdtctqdfxqqmgnseclstbhpkslctxxlpaydzklzygzcqapllkccylbqmqczqcljslqzdjxlddhpjqdljjxzqdjyzhkzljcyqdyjppypeakjyrmpcbymcxkllzllfqpylllmbsgjcysslrsysqtmxyxzqzbdzrysyztffmzzsmzqhzssccmlyxwtpzgxzjgzgsjsgkddhtqggzllbjdzlcbchyxyzhzfyxxstymsdbzzyjgtsmtfxqyxjssdgslnmdlrytzlryylxqhtxsrtzcgyxbnqqzfhykmzjbzymkbpnlyzpblmcnqyzzdsjzhjctshhyzzjrdyzhnfxglfxslkgjtctssyllgzrzbbjzzklpkbczyslxyxbjfpnjzzxcdwxzyjxzzdjjgggrsrjkmcmzjlsjywqs0yhqjsxpjztzlsnshrnypjtwchklbsrzlcxwjqxqkysjycztlqzybbybwzjqdwwyzcytjcjxckcwdkkzhsgkdzywwyyjqyytcytdjlxwkcckklcclzcqqdzlqlcsfqchqhsfsmqzzllbjjzbsjhtsjdysjqjpdlzcdcwjkjzzlpycgmzwdjjbsjqzsyzyhhxcpbjydssddzncglqmbtsfcbfdzdlznfgfjgfsmptjqlmblgqcyyxbqkdjjqsrfkztjdhczklbsdzcfytplljgjhtxzcsszzxstcygkgckgyoqxjplzpbbgtgyjzgczqszlbjlsjfzgkqqjcgwczpzqtldxrjxbsxxpzxhszyclwdsjjhxmfczpfzhqhqmqgkylyhtycgfrzgnqxcgpdlbzcsczqlljblhbzcypczppdymtzsgyhckcpzjgslclnscdsldzxbmsdlddfjmkdjdhslzxlszqpqpgjllybdszgqlbzlslkyyhzttncjyqtzzfszqztlljtyyllqllqyzqlbdzlslyyzymdfszsnhlxznczqzbbwskrfbcyzmthblgjpycnzcstlxshtzcyzlzblfeqhlxflcjlyljqcbzlzjghsstbrmhxzhjzclxfnbgxgtqjcztmsfzkjmssnxljkbhszxntnlzdntlmsjxgzjgjczxyhyhwrwwqnztnfjscpzshzjfyrdjsfscjzhjfzqzchzlxfxsbzqlzsgyftzdcszxzjbqmszkjrhxjzcgbjkhchgtxkjqglxbxfgtrtylxjxgdtsjxhjzjjcmzlcqsbtxhqgxtxxhxftsdkfjhzyjfjxrzldlljcqsqqzjwqxswqtwgwbzcgcllqzbclmqjtzgzxzxljfrmyzflxyszxxjkxrmjdcdmmyxbsqbhgzmwfwtgmxlzbgytgzyccdxyzxswg0yjyznbgpzjcqsyxcxrtfyzgrhztxszzthcbfclsyxzlzqmzlmplmxzjssflbysmyqsxjzxrxsqzzzssljflczjrcrxhhzxqwdshxsjjhqcxjbdynsysrjbqlpxzzpymlxzkyxlxcjlcycxxzzlldlllsjyhzxhyjwkjrwyhcpsgnrzlfzwfzznsxgxflzsxzzzbfcsyjdbrjkrdhhgxjljjtgxjxxstjtjxlyxqfcsgswmsbctlqzzwlzzkxjmltmjyhsddbxgzhdlbmyjfrzfcgclyjbpmlysmsxlszjqqhjzfxgfqfqbpxzgyyqxgztcqwyltlgwwwwhwlfsfgzjmgmgbgtjfsyzzgzyzaflsspmlbflcwbjzcljjmzlpjjlymqdmylyfbgygqzmlyzdxqyxrqqqhsxyyqqygjtyxfsfsllgnqcyhycwfhcccfxbylypllzqxxxxxkqhhxshjdcfdsczjxcpzwhhhhhapylhalpqafyhxdyllkmzqgggddesrendltzgchybpssqjjhclljtolnjpzljlhymheydydsqycddhgzpndzclzywllznteytgxlhslpjjbdgwxpcdntjcklkclwkllcasstknzdnqnttlyyzssysszzryljqkcgbhhcrxrzydgrgcwcgzqffbppjfzynakrgywyqpqxxfkjtszzxswzddfbbqtbgtzfznpzfpzxzpjszbmqhqcyxyldkljnypkyghgdcjxxeahpnzgztzcmxcxmmjxnkszqnmnlwbwwxjjrhclstmcsjtjcxxtpcnfdtnnpglllzcjlspblpgjcdtnjnlyarszffjfqwdpgzdwmrzcclodaxnssnyzrestyjwjyjdbcfxnmwttbqlwstszgybljpxglboclgpcbjftmxzljylzxcltpnclckxtfzjshcrxsfyszdkntlbyjcyjllstgqcbxnwzxbxklylhzlqzlnzcqwgzlgzjncjgcmnzzgjdzxtzjxycyycxxjyyxjjxsssjstssttppghtcsxwzdcsyfptfbchfbblzjclzzdbxgcxlqpxkfzflsyltywbmnjhskbmddbcysccldxycddqlyjjhmqllcsgljjsyfpyycayldjantqjpwycmmgqyysxdhqmzhszxbftwwzqswqrfkjlxjqqyfbrxjhlfwjgzyqacmyfrhccybyqwlpexcczsdyrlttdmqlykmbbgmyyjprkznpbsxyxbhyzdjdnghpmfsgbwfzmfqmmbzmzzcjjlcnyxyqgmlrygqccyhzlwjgcjchgmcjjfyzzjhycfrrcmtzqzxhfqgdjxccjeaqcrjyhpljlszdjrbcqhjdzrhxlyqjsymhzydwldfryhbbydtssccwbxglpzmlzztqsscpjmmxjcsjytycghycjwsnsxlfemwjnmkllswtxhyyy0cmmcwjdqdjzglljwjnkhpzggflccsczmcbltbhbqjxqdjpdjqtghglfqawbzyzjltstdhqhctcbchflqmpwdshyytqwcnztjtlbypbpdyyyxsqkxwyyflxxncwcsybmaelykkjmzzzbrxyaqjfljpfhhhxtzzxsgqqmhspgdzqwbwpjhzjdyjcqwzkthxsqlzyymysdzgrxckkhjlwpysyscsyzlrmlqsyljxbcxtlhdqzpcycykpppnsxfyzjjrcemhszmsxlxglrwgcstlrsxbygbzgztcpldjlslylymdtmtzpalcxpqjcjwtcyyzlblxbzlqmyljbghdslssdmhmbdczsxwhamlczcpjmcnhjyjnsygchskqmzzqdllkablwjqsfmocdxjrrlyqzhjmybyqlrhetfjzfrfksryxfjdwdsxxsysqjyslyxwjhsnlxyyxhbhawhhjcxwmyljcsqlkydttxbzsxfdxgxsjhhsxxybssxdpyncmrptjzczenygcxqfjxkjbdmljcmqqxloxslyxxlylljdzbtymhbfsttqqwlhogyblszalzxqlhtwrrqhlstmypyxjjxmqsjpnbryxyjllyqylthylqyfmlgljdmllhfzwkzhljmlhljklj0tlqxylmbhhlnlsxqchxcfxxlhyhjjgbyzzkbxscqdjqdsxjzsyhzhhmgsxcsymxfebcqwwrbpyyjqtyqcyjhqqzyhmwffhgzfrjfcdbxndqyzpcykhjlfrzgppxzdbbgzqstlgdtylcqmgchhmfywlzyxkjlypjgsywmqqgqzmlzjnsqxjqxyjtcbehsxfssfxzwfllbcyyjdytdthwzzfjmqqyjlmqsxlldttkhhybfpwdyysqqrnqwlgwdebdwcyygcdlkjxtmxmyjsxhybrwfymwfrxyqmxysctzzdfykmldhqdlwyqnlcryjtlpsxcxywlsbrrjwxhqybhtydnhhgmmywytzcsqmdssccdalwdtcpqpycllqzyjswxwzzmmglmxclmxczmxmzsqtzppjqblpgxjzhfljjhycjsnxwcxsccdlxsyjdcqcxslqyclzxlzzxmxqrjmhrhzjphmfljlmlclqnldxzlllfypngjysxcqqdcmqjzzxhnpnxzmekmxhykyqlxsxtxjxyhwdcwdzhqyybgybcyscfgfsjnzdrzzjzxrzrqjjymcanhrjtldbpyzbstjhxxzypfdwfgzzrpymtngxzqbyxmbbfcckrpjjbjegrzgyclkhzdxkknsjkcljspgyyzlqqjybzssqlllkjbcbktylcccdblcppfylgydxzjyqggkqttfcxbdkdxxhybbfytyhbzlpdytgdhryrnjsbtcsnyjqhklllzslydxxwbcjqsbxbfjzjcjdzfbxxbrmlazgcsnclbjdstblfrz0swsbxbcllxxlzdjzsjpylyxyyftfffbhjjjgbygjpmmmpssczjmtlyzjxswxtyledqpjmygqzjgdjlqjwjqllsdgjgygmscljjxdtygjqjqjcjzcjgdzdshqgsjggcjhqxsnjjzzbxhsgzxcxyljxyxyydfqqjhjfxdhctxjdrxysqtjxyefyyssyxjxncyzxfxcsyszxyyschshxzzzgzzzgfjdldylnpzgyjyztyqzpbxqbdztzczyxxyhhscxshcggqhjhgxwsctmzmlhyxgebtylzkkwytjzrclekestdbcykqqsayxcjxwwgsbhjszsdhcsjkqcxswxfctynydpzcczjqtzwjqdzzzqzljcxlsbhbydxpsxshhezdxfptjqyzzxhyaxncfzyyhxgnxmywxtzsjbkhhgymxmxqcxtsbcqsjyxhtyylybcqlmmszmjzjllcogxzaajzyhjmchhcxzsxzdznleyjjzjbhzwzzsqtjpsxztdsxjjjznyazphhyysrrqdthzhayjyjhdzjzlswclybzyecwcycrylcxnhzydzydyjdfrjjhtrsqtxyxjrjhojynxelxsfsfjzghpzsxzszdzcqzbyyklsgsjhczshdgqgxyzgxchxzjwyqwgyhksseqzzndzfkwysstclzstsymcdhjxxyweyxczaydmpxmdsxybsqmjmzjmtzqlpjyqzcgqhxjhhhxxhlhdldjqcldwbsxfzzyyschtytyjbhecxhjkgjfxbhyzjfxhwhbdzfyzbcapnpgnydmsxhkhhmamlnbyjtmpxyjmcthjbzyfcgdyhwphftgzzezsbzegpbmdskftycmhbllhgpzjxzjgzjyjzsbbqsczzlzccstpgxmjsfdcczjzdjxcybzlfcjsazfgszlybcwzzbyzdzypswyjgxzbdsysxlgzbzfygczxbzhzftpbgzgejbstgkdmfhyzzjhzllzzgjqzlsfdjsscbzgpdlfzfzszyzyzsygcxsntxchczxtzzljfzgqsqyxzjqccccdqcdxzjyqjqcgxztdlgscxzsyjjqtcclqdqztqchqqjztezzzpbkkdjfcjfztybqyqttyjlmbdktjcpqzjdzfpjsbnjlgyjdxjdzqkzgqkxdlpzjtcjdqbxdjjjstcjnxbxcmslyjcqmtjjwwcjjnjnlllhjcwqtbzqqczczpzzdzyddcyzdzccjgtjfcdprntctjdcqtqndtjnplzbcllctdsxkjzqdpzlbznbtjdcxfczdbccjjltqqpldcgztbbzjcqdcjwynllzlzccdwllxwzlxrsntqjczxkjlsgdfqtddglrlajjtklymkqlldzytdyycygjwyxdxfrskstcdenqmrkqzhhqkdldazfkypbggpzrebzzykyqspegjjglkqzzzslysywyzwfqznlzhlzhwcgkypqgnpgblplrrjyxcccgyhsfzfwfzywtgzxyljczwhxzjzblfflgskhyjdeyjhlpllllcygxdrzelrhgklzzyhzlyqszzjzqljzflnbhgwlczcfjwspyxzlzlxgccbzbllcxbbbbxbbcbbcrnnzccyrbdsyldcgqyyqxygmqzwtzydyjhyfwdehzdjywlccctzyjjcdedpzdztsy0jhdymbjnyjzlxtsstphndjxxbyxqtzqddtjtdyztgwscszqflshlglbczbhdlyzjyckwtydylbnydsdsyccdyszyyebgexhqddwnygyclxtdcystqmygzasccszzddlcclzrqxyyeljsbymxshztembbllyyllytdqyshymrqxkfkbfxnxsbychxbwjyhtqbpbsbwdzylkgzskyghqzjxhxjxgnljkzlyycdxlfwfghljgjybxblybxqpqgztzplncybxdjyqydymrbesjyyhkxxstmxrczzywxyhybmcflyzhqyzmqxdbxbzwzmslpdmyckfmzklzcyqycclhxfclydqzpzygyjyzmdxdzfyfyttqtzhgspczmlccytzxjcytjmkslpzhysnwllytpzctzzcktxdhxxtqcypksmqccyyazhtjpcylzlyjbjxtpnyljyynrxcylmmnxjsmybcsysslzylljjgyldzdpqhfzzblfndsqkczfhhhgqmrdsxycstxnqqrpyjbfcxdyqfbnxejdgyqbsrcnfyyqpghyjdyzxgrhtkyleqdzntsmgklbsgbpyszbydjzsstjzstxzbhbscsbzczptqfzmqflypybbjgszmxxdjmtsyskkbjtxhjcegbsmhyjzcxtmljyxrzzqscxxqptzhmkdxxxjcljprmyygadyskqlsadhrskqxzxztcxhztlmlwxybwsyctbhjhjfcwzsxhwtkzlxqshlyczjxemplprcgltbzztlzjcyjgdtslklpllqpjmzpapxyzlaktkdnczzbncctdqqzjyjgmctxldgcszlmlhbglkfbnwzhdxphlfmkyclgxdtwzfrjejctzhydxykshwfzcqshknmqqhtchymjdjskhxzjzbzzxympajqmcdbxlsklyynwrtsqgscbpdbsgzwyhtlkssswgzzlyytnxjgmjszsxfwnlsoztxgxlsammlbwldscylakqcqstmycfjbslxclzjclxxksbzqzlhjphqplsxscgslnhpsfqqxtxjjzlqldxzjjzdyydjnzptfcdskjfsljhylzqjzlbthydgdjfdbyazxdzhzjnhhqbygnxjjqczmlljzkspldsclbblxklelxjlbjycxjxgcnlcqplzlznjtzljgyzdzpltqcssfdmnycxgbtjdcznbgbqyqjwgkfhdnbyqzqgbkpbbyzmtjdytblsqmbsxtbnpdxklemyycjynzdtldykzzxtdxhqshdgmzsjycctayrzlpwltlkxslzcggexclfxlkjrtlqjaqzncmbqdkkcxglczjzxjhptdjjmzqykqsecqzdshhadmlzfmmzbgntjnnlgbyjbrbtmlbyjdzxlxjlpldlpcqdhlhzlycblcxccjadjlmcmmsshmybhbskkbhrsxxjmxsdznzpxlbbrhgghfchgmsklltsjyycqlcskywyehywhbhqywbawykqldq0tntkhqcgdqktgpkxhcpdhtwtmssyhbwcrwxhjmkmzngwtmlkfghkjyldyycxwhyeclqhkqhttqkhffldxqwytyydesbpkyrzpjfyyzjceqdzzdlattbbfjllcxdlmjsdxegygsjqxcwbxsszpdyzcxdnyxpfzqdlyjccpltxlsxyzyrxcyyydylwwndsahjsyqyhgywwaxtjzdaxysrltdpssaxfnejdxyzhlxlllzhzsjnyqyqjxyjghzgjcyjchzlycdshhsgczyjgcllnyzcjyyxnfsmwfpylcyllabwddhwdxjmcxztzpmlqzhsfhzynstlldywlslxhymmylmbwwkyxyadtxylldjpybpwfxjmmmllhafdllaflbhhhbqqjtzjcqjjdjtffkmmmpymhygdcjrddwrqjxnbysnmzdbxytbjhpybygtjxaahgqdqtmbstqxkbtsbkjlxrbeqqhqmjjbdjwtgtbxpgbktlgqxjjjcdhxqdwjlwrfmqgwqhckryswgbtgygbwsdwdwrfhwytjjxxxjyzyslphyypayxhydqqxshxyxeskqhywbdddpplcjlhqeewjksyykdyplfjthkjltcyjhhjttbltzzcdlthqkcjqysteeywkyzyxxyysddjkllpwmcyhqgxyhcrmbxpllnqydqhxsxxwgdqbshyllpjjjthyjkyphthyyktyezyenmdshlcrpqfbgfxzbsbtlgxxjbswyysksflxlpplbbblbsfxfyzbsjssylpbbffffsscjdstzsxtryycyffsyzyzbjtbctsbsdhrtjhbytcxyjeylxcbnebjdsysyhgsjcbxbydfzwgenyhhthjhaxfwgcstbgxklstywmtmbyxjskzsxdyjrcytwxzfhmymcxlznsdjtxtxrycfyjsbsdyerxhgjxbbdeynjghxgckgscymblxjmsznskgxfbnbbthfjaafxyxfpxmyfhdttcxzzpxrsywzdlybbjtyqwqjpzypzjznjpzjlztfysbttslmptzrtdxqsjehbzylzdhljsqmlhtxtjecxslzzspktlzkqqyfsygywpcpqfhqhytqxzkrsgtgsqczlptxcdyyzssqzslxlzmacpcqbzyxhbsxlzdltcdjtylzjyytpzylltxjsjxhlbmytxcqrblzssfjzztnjytxmyjhlhpblcyxqjqqkzzscpzkswalqsplcczjsxgwwwygyatjbbctdkhqhkgtgpbkqyslbxbbckbmllxdzstbklggqkqlsbkkdfxrmdkbftpzfrtbbmfeeqgxkjpzsstlbztpszqzsjdhljqlzbpmsmmsxlqqnhknblrddnhxdkddjcyygyfzgzlgsygmjqgkhbpmxyxlytqwlwgcpbmjxcyzydrjbhtdjyejshtmjsbyplwhlzffnypmhxqhpltbqpfbcwjdbygpnxtbfzjgsdctjshxeawzzylltyybwjkgxghlfkxtjtmszsqynzggswqsphtlsskmclzxyszqqxncjdqgzdlfnykljcjllzlmzznhydsshthxzlzjbbhqzwwycrdhlyqqjbeyfsjxthsrxwjhwpslmssgzttyeyqqwrslalhmjtqjsmxqpjjzjxzyzkxbyqxbjxshzssfglxyxzxfghkzszggylclsarjxhslllmzxelglxydjytlfbhbpnlyzfbbhptgjkwetzhkjjxzxxglljlstgshjjyqlqzfkcgnndjsszfdbctwwseqfhqjbsaqtgypjlbxbmmywxgslzhglzgnyfljbyfdjfrgsfmbyzhqfbwjsyfyjjphzbyyzffwodjrlmftmlbzgycqxcdjygzyyyydytydwegazyhxjlzyyhlrmgrjxzclhneljjthtbwjybjjbxjjtjteekhwslzplpsfazpqqbdlqjjtyyqlyzkdksqjyyjzldqcgjqyzjsycmraqthtejmfctyhypkmhycwjdcfhyyxwshctxrljgjshccyyyjltkttytmxgtcjtzayyoczlylbszywjytsjyhbyshfjlygjxxtmzyyltxxypzlxyjzyzyypnhmymdyylblhlsyygqllnjjymsoycbzgdlyxylcqyxtszegxhzglhwbljheyxtwqmakbpqcgyshhegqcmwyywljyjhyyzlljjylhzyhmgsljljxcjjyclycjpcpzjzjmmylcjlnqljjjlxxjmlszljqlycmmhcfmmfpqqmfxlqmcffqmmmmhmznfhhjgtthhkhslnchhyqdxtmmqdcydyxyqmyqylddcyyydazdcymdydlzfffmmycqcwzzmabtbyctdmndzggdftypcgcyttssffwbdtzqssystwjjhjytsxxylbyqhwwhxezxwznnqzjzjjqjccchyyxbzxzcyjtllcqxynjycyycynzzqyyyewyczdcjycchyjlbtzyycqwlpgpyllgkdldlgkgqbgychjx0csh0zg00jyzsk00s0g0jzl0000000sl0000000l000000000000000000000000000000000000000000000000000';
+function pyInitials(s){
+  if(!s) return '';
+  var out='';
+  for(var i=0;i<s.length;i++){
+    var c=s.charCodeAt(i);
+    if(c>=0x4E00&&c<=0x9FFF&&(c-0x4E00)<PY_INITIALS.length){
+      var p=PY_INITIALS.charAt(c-0x4E00);
+      if(p>='a'&&p<='z') out+=p;
+    }else if(c>=65&&c<=90){ out+=String.fromCharCode(c+32); }
+    else if(c>=97&&c<=122){ out+=s.charAt(i); }
+    else if(c>=48&&c<=57){ out+=s.charAt(i); }
+  }
+  return out;
+}
+/* 模糊匹配：每个空格分词都要命中任一字段的原文（大小写不敏感）或拼音首字母 */
+function matchQuery(texts,q){
+  q=String(q||'').trim().toLowerCase();
+  if(!q) return true;
+  var toks=q.split(/\s+/);
+  var hay=[],py=[];
+  for(var i=0;i<texts.length;i++){
+    var t=String(texts[i]==null?'':texts[i]).toLowerCase();
+    hay.push(t); py.push(pyInitials(t));
+  }
+  for(var t=0;t<toks.length;t++){
+    var tok=toks[t],hit=false;
+    for(var i=0;i<hay.length;i++){
+      if(hay[i].indexOf(tok)>=0||py[i].indexOf(tok)>=0){ hit=true; break; }
+    }
+    if(!hit) return false;
+  }
+  return true;
+}
+
+/* ---------- localStorage（最近使用，与常驻面板共享键名） ---------- */
+var LS_RECENT=(new URLSearchParams(location.search).get('demo')==='1'?'suhub.demo.':'suhub.')+'recent';
+function lsGet(key,fb){
+  try{ var v=localStorage.getItem(key); return v==null?fb:JSON.parse(v); }catch(e){ return fb; }
+}
+function lsSet(key,v){
+  try{ localStorage.setItem(key,JSON.stringify(v)); }catch(e){}
+}
+function getRecent(){ var a=lsGet(LS_RECENT,[]); return Array.isArray(a)?a:[]; }
+function addRecent(id,at){
+  var a=getRecent().filter(function(x){ return x&&x.id!==id; });
+  a.unshift({id:id,t:typeof at==='number'?at:Date.now()});
+  if(a.length>10) a.length=10;
+  lsSet(LS_RECENT,a);
+}
+var commandOutcomes=SUHubCommandOutcomes.create({storage:{getItem:function(key){return localStorage.getItem(key);},setItem:function(key,value){localStorage.setItem(key,value);}},key:LS_RECENT.replace(/recent$/,'command-completions'),recordRecent:addRecent,notify:toast});
+window.__onCommandResult=function(result){commandOutcomes.handle(parseJson(result),{notify:true});render();};
+
+/* ---------- 轻提示 ---------- */
+var toastTimer=null;
+function toast(msg){
+  var el=$('#toast');
+  el.textContent=msg; el.hidden=false;
+  el.classList.remove('show'); void el.offsetWidth; el.classList.add('show');
+  if(toastTimer) clearTimeout(toastTimer);
+  toastTimer=setTimeout(function(){
+    el.classList.remove('show');
+    setTimeout(function(){ el.hidden=true; },220);
+  },2600);
+}
+
+/* ============ 演示数据（与 direction-final.html 一致的命令清单） ============ */
+var DEMO_STATE={
+  version:'0.9.2',
+  categories:{ model:'模型工具', material:'材质', component:'组件', draw:'绘图', arch:'建筑', clean:'清理', render:'渲染', import:'导入导出', script:'我的脚本' },
+  plugins:[],
+  commands:[
+    {id:'super-pushpull', title:'超级推拉', category:'model', keywords:['推拉','cjtl','push','pull'], shortcut:'Ctrl+⇧+P', fromPlugin:'super-pushpull'},
+    {id:'fillet', title:'圆角工具', category:'model', keywords:['圆角','倒角','yjgj','fillet'], shortcut:'Ctrl+⇧+F', fromPlugin:'fillet'},
+    {id:'batch-group', title:'批量成组', category:'model', keywords:['成组','群组','plcz','group'], shortcut:'Ctrl+⇧+G', fromPlugin:'batch-group'},
+    {id:'stats-export', title:'统计导出', category:'model', keywords:['统计','报表','tjdc','stats'], shortcut:'Ctrl+⇧+S', fromPlugin:'stats-export'},
+    {id:'batch-rename', title:'批量重命名', category:'model', keywords:['重命名','plcmm','rename'], shortcut:'Ctrl+⇧+R', fromPlugin:'batch-rename'},
+    {id:'material-swap', title:'材质替换', category:'material', keywords:['材质','替换','czth','material','qc'], shortcut:'Ctrl+⇧+M', fromPlugin:'material-swap'},
+    {id:'spray-component', title:'组件喷笔', category:'component', keywords:['喷笔','散布','zjpb','spray'], shortcut:'Ctrl+⇧+B', fromPlugin:'spray-component'},
+    {id:'lines-to-cyl', title:'线转柱体', category:'draw', keywords:['柱体','圆柱','xzzt','pipe'], shortcut:'Ctrl+⇧+T', fromPlugin:'lines-to-cyl'},
+    {id:'section-tool', title:'剖面工具', category:'draw', keywords:['剖面','剖切','pmgj','section'], shortcut:'Ctrl+⇧+X', fromPlugin:'section-tool'},
+    {id:'terrain', title:'地形沙盒', category:'draw', keywords:['地形','等高线','dxsh','terrain'], shortcut:'Ctrl+⇧+D', fromPlugin:'terrain'},
+    {id:'door-window', title:'一键门窗', category:'arch', keywords:['门窗','yjmc','door'], shortcut:'Ctrl+⇧+O', fromPlugin:'door-window'},
+    {id:'curtain-wall', title:'幕墙生成', category:'arch', keywords:['幕墙','玻璃','mqsc','curtain','qc'], shortcut:'Ctrl+⇧+W', fromPlugin:'curtain-wall'},
+    {id:'cover-faces', title:'快速封面', category:'arch', keywords:['封面','封闭','ksfm','face'], shortcut:'Ctrl+⇧+A', fromPlugin:'cover-faces'},
+    {id:'cleanup-model', title:'清理模型', category:'clean', keywords:['清理','清除','qlmx','clean','qc'], shortcut:'Ctrl+⇧+C', fromPlugin:'cleanup-model'},
+    {id:'script-batch-import', title:'我的脚本·批量导入', category:'script', keywords:['导入','pldr','import'], shortcut:'Ctrl+⇧+I', fromPlugin:'script-batch-import'},
+    {id:'script-layer-archive', title:'我的脚本·图层归档', category:'script', keywords:['图层','归档','tcgd','layer'], shortcut:'Ctrl+⇧+L', fromPlugin:'script-layer-archive'}
+  ]
+};
+function deep(o){ return JSON.parse(JSON.stringify(o)); }
+function parseJson(x){
+  if(typeof x==='object' && x!==null) return x;
+  if(typeof x!=='string') return x;
+  try{
+    var v=JSON.parse(x);
+    if(typeof v==='string') v=JSON.parse(v);
+    return v;
+  }catch(e){ return null; }
+}
+
+/* 快捷入口来自持久化设置，目标由 Ruby 校验并执行。 */
+var PLUGIN_ICONS={
+  'super-pushpull':'i-push','fillet':'i-fillet','batch-group':'i-group','stats-export':'i-chart','batch-rename':'i-rename',
+  'material-swap':'i-drop','spray-component':'i-spray','lines-to-cyl':'i-cylinder','section-tool':'i-slice','terrain':'i-terrain',
+  'door-window':'i-door','curtain-wall':'i-curtain','cover-faces':'i-grid','cleanup-model':'i-trash',
+  'script-batch-import':'i-import','script-layer-archive':'i-layers'
+};
+var CAT_ICONS={ model:'i-cube', material:'i-drop', component:'i-group', draw:'i-cylinder', arch:'i-door', clean:'i-trash', render:'i-cube', import:'i-import', script:'i-layers' };
+
+/* ============ JS→Ruby 桥接 ============ */
+var demoMode=new URLSearchParams(location.search).get('demo')==='1',connected=false;
+function hasBridge(){
+  return typeof window.sketchup==='object' && window.sketchup!==null
+    && typeof window.sketchup.get_state==='function';
+}
+/* 数据请求：Ruby 端 execute_script 注入 window.__onState(data)（data 直接是对象） */
+var BRIDGE_MAP={get_state:'__onState',get_settings:'__onSettings',run_command:'__onRun',execute_shortcut:'__onShortcut',open_panel:'__onOpenPanel',close_dialog:'__onClose'};
+var requestNo=0,pending={},requestQueues={};
+Object.keys(BRIDGE_MAP).forEach(function(name){
+  window[BRIDGE_MAP[name]]=function(raw,id){
+    var data=parseJson(raw),request=id?pending[id]:null;
+    if(request&&request.name===name){request.finish(null,data);return;}
+    if(name==='get_state'&&!id&&validState(data))acceptState(data);
+  };
+});
+function bridgeRequest(name,arg){
+  var next=(requestQueues[name]||Promise.resolve()).catch(function(){}).then(function(){return new Promise(function(resolve,reject){
+    if(!hasBridge())return reject(new Error('未连接 SketchUp，请从扩展菜单打开 SU 中枢'));
+    if(typeof window.sketchup[name]!=='function')return reject(new Error('当前宿主不支持 '+name+'，请安装完整版本'));
+    var id='su'+Date.now().toString(36)+'_'+(++requestNo),done=false;
+    var timer=/^(run_command|execute_shortcut)$/.test(name)?null:setTimeout(function(){finish(new Error('请求超时，请重试：'+name));},15000);
+    function finish(error,data){if(done)return;done=true;clearTimeout(timer);delete pending[id];if(error)reject(error);else if(data==null)reject(new Error('宿主返回无效数据'));else resolve(data);}
+    pending[id]={name:name,finish:finish};
+    try{
+      var result=arg===undefined?window.sketchup[name](id):window.sketchup[name](arg,id);
+      if(result&&typeof result.then==='function')result.then(function(value){if(value!==undefined)finish(null,parseJson(value));},finish);
+      else if(result&&(typeof result==='object'||typeof result==='string'))finish(null,parseJson(result));
+    }catch(error){finish(error);}
+  });});requestQueues[name]=next;return next;
+}
+async function action(name,arg){var result=await bridgeRequest(name,arg);if(!result||result.ok!==true)throw new Error(result&&result.message||'操作失败');return result;}
+async function commandAction(name,arg,commandId){
+  var result=commandOutcomes.handle(await bridgeRequest(name,arg),{commandId:commandId});
+  if(result.status==='failed'||result.status==='unavailable')throw new Error(result.message||'操作失败');
+  if(result.message)toast(result.message);
+  return result;
+}
+function jsLog(msg){
+  try{
+    if(typeof window.sketchup==='object' && window.sketchup && typeof window.sketchup.js_log==='function'){
+      window.sketchup.js_log(msg);
+    }
+  }catch(e){}
+}
+
+/* ============ 状态与渲染 ============ */
+var state={commands:[],plugins:[],categories:{}},settings={shortcuts:[]},selectables=[],sel=0,connectionError='',executing=false;
+
+function catLabel(key){ return (state&&state.categories&&state.categories[key])||key||''; }
+function iconForCommand(c){
+  if(c.fromPlugin&&PLUGIN_ICONS[c.fromPlugin]) return PLUGIN_ICONS[c.fromPlugin];
+  return CAT_ICONS[c.category]||'i-cube';
+}
+function keysHTML(shortcut){
+  if(!shortcut) return '';
+  var parts=String(shortcut).split(/\+|\s+/).filter(Boolean);
+  return '<span class="q-keys">'+parts.map(function(x){ return '<span class="key">'+esc(x)+'</span>'; }).join('')+'</span>';
+}
+
+/* 组装结果项（head=分组标题；cmd=命令；short=快捷入口占位；empty=无结果提示；market=到插件市场搜索） */
+function buildRows(q){
+  q=String(q||'').trim();
+  var items=[];
+  if(!q){
+    var shortcuts=(settings.shortcuts||[]).filter(function(shortcut){return shortcut.type!=='command'||state.commands.some(function(command){return command.id===shortcut.target&&command.enabled!==false;});});if(shortcuts.length)items.push({head:'快捷入口',count:shortcuts.length});
+    shortcuts.forEach(function(shortcut){items.push({type:'short',shortcut:shortcut,title:shortcut.title,hint:shortcut.type==='command'?'命令':'网页',icon:shortcut.type==='command'?'i-cube':'i-play'});});
+    var rec=getRecent().map(function(r){
+      for(var i=0;i<state.commands.length;i++) if(state.commands[i].id===r.id&&state.commands[i].enabled!==false) return {cmd:state.commands[i],t:r.t};
+      return null;
+    }).filter(Boolean);
+    if(rec.length){
+      items.push({head:'最近使用',count:rec.length});
+      rec.forEach(function(it){ items.push({type:'cmd',cmd:it.cmd}); });
+    }else if(state.commands.length){
+      var available=state.commands.filter(function(command){return command.enabled!==false;});items.push({head:'全部命令',count:available.length});available.forEach(function(command){items.push({type:'cmd',cmd:command});});
+    }
+  }else{
+    var hits=state.commands.filter(function(c){
+      if(c.enabled===false)return false;
+      var fields=[c.title,c.category,catLabel(c.category),c.fromPlugin||''].concat(c.keywords||[]);
+      return matchQuery(fields,q);
+    });
+    if(hits.length){
+      items.push({head:'命令',count:hits.length});
+      hits.forEach(function(c){ items.push({type:'cmd',cmd:c}); });
+    }else{
+      items.push({type:'empty',q:q});
+      items.push({type:'market'});
+    }
+  }
+  if(!q&&!items.some(function(item){return item.type==='cmd'||item.type==='short';}))items.push({type:'notice'});
+  return items;
+}
+function rowHTML(it,idx){
+  if(it.type==='cmd'){
+    var c=it.cmd;
+    return '<div class="q-row" role="option" id="result-'+idx+'" data-i="'+idx+'">'
+      + ico(iconForCommand(c))
+      + '<span class="q-name">'+esc(c.title)+'</span>'
+      + '<span class="q-tag">'+esc(catLabel(c.category))+'</span>'
+      + keysHTML(c.shortcut)
+      + '</div>';
+  }
+  if(it.type==='short'){
+    return '<div class="q-row" role="option" id="result-'+idx+'" data-i="'+idx+'">'
+      + ico(it.icon)
+      + '<span class="q-name">'+esc(it.title)+'</span>'
+      + '<span class="q-hint">'+esc(it.hint)+'</span>'
+      + '</div>';
+  }
+  if(it.type==='market'){
+    return '<div class="q-row q-market" role="option" id="result-'+idx+'" data-i="'+idx+'">'
+      + ico('i-store')
+      + '<span class="q-name">到插件市场搜索</span>'
+      + '<span class="q-keys"><span class="key">回车</span></span>'
+      + '</div>';
+  }
+  return '';
+}
+function render(){
+  if(connectionError){selectables=[];$('#qBody').innerHTML='<div class="q-empty"><p class="q-empty-t">'+esc(connectionError)+'</p><button id="retryConnection">重试连接</button></div>';$('#qAction').textContent='未连接 SketchUp';return;}
+  var q=$('#qInput').value;
+  var items=buildRows(q);
+  var html='';
+  selectables=[];
+  items.forEach(function(it){
+    if(it.type==='notice'){html+='<div class="q-empty"><p class="q-empty-t">暂无可用命令</p><p class="q-empty-s">在 SU 中枢的设置中启用插件，或前往市场安装插件。</p></div>';return;}
+    if(it.head){
+      html+='<div class="q-sec-head"><span>'+esc(it.head)+'</span><span class="g-count">'+it.count+'</span></div>';
+      return;
+    }
+    if(it.type==='empty'){
+      html+='<div class="q-empty">'
+        + '<svg class="q-empty-ico"><use href="#i-null"/></svg>'
+        + '<p class="q-empty-t">未找到「<b>'+esc(it.q)+'</b>」相关命令</p>'
+        + '<p class="q-empty-s">试试拼音首字母，例如输入「qc」</p>'
+        + '</div>';
+      return;
+    }
+    var idx=selectables.length;
+    selectables.push(it);
+    html+=rowHTML(it,idx);
+  });
+  $('#qBody').innerHTML=html;
+  if(selectables.length&&sel>=selectables.length) sel=0;
+  updateSel();
+  /* 计数徽标 / 清空按钮 */
+  var hits=selectables.filter(function(s){ return s.type==='cmd'; }).length;
+  if(q.trim()&&hits){
+    $('#qCount').hidden=false;
+    $('#qCount').innerHTML='匹配 <b>'+hits+'</b> 个命令';
+  }else{
+    $('#qCount').hidden=true;
+  }
+  $('#qClear').hidden=!q;
+}
+function updateSel(){
+  var rows=document.querySelectorAll('#qBody .q-row');
+  for(var i=0;i<rows.length;i++){rows[i].classList.toggle('sel',i===sel);rows[i].setAttribute('aria-selected',String(i===sel));}
+  if(rows[sel])$('#qInput').setAttribute('aria-activedescendant',rows[sel].id);else $('#qInput').removeAttribute('aria-activedescendant');
+  var it=selectables[sel];
+  if(it){
+    if(it.type==='cmd') $('#qAction').textContent='执行：'+it.cmd.title;
+    else if(it.type==='short') $('#qAction').textContent='打开：'+it.title;
+    else if(it.type==='market') $('#qAction').textContent='打开：插件市场';
+  }else{
+    $('#qAction').textContent='执行：—';
+  }
+  var el=rows[sel];
+  if(el){
+    var b=$('#qBody');
+    if(el.offsetTop<b.scrollTop) b.scrollTop=el.offsetTop;
+    else if(el.offsetTop+el.offsetHeight>b.scrollTop+b.clientHeight) b.scrollTop=el.offsetTop+el.offsetHeight-b.clientHeight;
+  }
+}
+
+/* ============ 执行 ============ */
+function flashRow(){
+  var rows=document.querySelectorAll('#qBody .q-row');
+  var el=rows[sel];
+  if(!el) return;
+  el.classList.add('exec');
+  setTimeout(function(){ el.classList.remove('exec'); },380);
+}
+async function closeWindow(){
+  if(demoMode){toast('演示模式不会关闭窗口');return;}
+  try{await action('close_dialog');}catch(error){toast('关闭失败：'+error.message);}
+}
+async function execute(){
+  var it=selectables[sel];
+  if(!it||executing)return;
+  if(demoMode){toast('演示模式不会执行操作');return;}
+  executing=true;
+  flashRow();
+  try{
+    var result;
+    if(it.type==='short'){
+      if(it.shortcut.type==='command')result=await commandAction('execute_shortcut',it.shortcut.id,it.shortcut.target);
+      else await action('execute_shortcut',it.shortcut.id);
+    }
+    else if(it.type==='market')await action('open_panel',JSON.stringify({tab:'market',query:$('#qInput').value.trim()}));
+    else result=await commandAction('run_command',it.cmd.id,it.cmd.id);
+    if(result&&result.status==='cancelled')return;
+    await closeWindow();
+  }catch(error){toast('操作失败：'+error.message);}finally{executing=false;}
+}
+
+/* ============ 启动 ============ */
+function seedDemoRecent(){
+  try{
+    if(!localStorage.getItem(LS_RECENT)){
+      var now=Date.now();
+      lsSet(LS_RECENT,[
+        {id:'batch-group', t:now-2*60000},
+        {id:'material-swap', t:now-5*60000},
+        {id:'cleanup-model', t:now-26*60000},
+        {id:'fillet', t:now-70*60000},
+        {id:'super-pushpull', t:now-26*3600000},
+        {id:'section-tool', t:now-3*86400000}
+      ]);
+    }
+  }catch(e){}
+}
+function validState(value){return !!(value&&Array.isArray(value.commands)&&Array.isArray(value.plugins));}
+function acceptState(value){if(validState(value)){state=value;settings=value.settings||settings;commandOutcomes.reconcile(value.commandResults);render();}}
+async function boot(){
+  connectionError='';
+  try{
+    if(demoMode){state=deep(DEMO_STATE);settings={shortcuts:[]};seedDemoRecent();}
+    else{var value=await bridgeRequest('get_state');if(!validState(value))throw new Error(value&&value.message||'无法读取命令清单');state=value;settings=value.settings||{shortcuts:[]};connected=true;
+      commandOutcomes.reconcile(value.commandResults);
+      if(!value.settings&&typeof window.sketchup.get_settings==='function'){var response=await action('get_settings');settings=response.settings||settings;}}
+  }catch(error){connected=false;connectionError=error.message;}
+  jsLog('palette boot: 模式='+(demoMode?'演示':'已连接')+' 命令数='+(state.commands?state.commands.length:'?'));
+  $('#qDemo').hidden=!demoMode;
+  render();
+  var inp=$('#qInput');
+  inp.focus();
+  setTimeout(function(){ inp.focus(); },60);
+}
+boot();
+
+/* ============ 事件绑定 ============ */
+$('#qInput').addEventListener('input',function(){sel=0;render();});
+$('#qClear').addEventListener('click',function(){
+  $('#qInput').value='';
+  render();
+  $('#qInput').focus();
+});
+document.addEventListener('mousedown',function(e){
+  if(e.target.closest('button')||e.target.closest('#qInput'))return;
+  /* 保持输入框焦点，行点击仍然生效 */
+  $('#qInput').focus();
+});
+$('#qBody').addEventListener('click',function(e){
+  if(e.target.closest('#retryConnection')){boot();return;}
+  var row=e.target.closest('.q-row');
+  if(!row) return;
+  sel=parseInt(row.getAttribute('data-i'),10)||0;
+  updateSel();
+  execute();
+});
+$('#qBody').addEventListener('mousemove',function(e){
+  var row=e.target.closest('.q-row');
+  if(!row) return;
+  var i=parseInt(row.getAttribute('data-i'),10);
+  if(i!==sel){ sel=i; updateSel(); }
+});
+window.addEventListener('keydown',function(e){
+  if(e.isComposing||e.keyCode===229)return;
+  if(e.key==='Escape'){
+    e.preventDefault();
+    closeWindow();
+    return;
+  }
+  if(e.key==='ArrowDown'){
+    e.preventDefault();
+    if(selectables.length){ sel=Math.min(sel+1,selectables.length-1); updateSel(); }
+    return;
+  }
+  if(e.key==='ArrowUp'){
+    e.preventDefault();
+    sel=Math.max(sel-1,0);
+    updateSel();
+    return;
+  }
+  if(e.key==='Enter'&&!e.target.closest('button')){
+    e.preventDefault();
+    execute();
+  }
+});
+})();
+</script>
+</body>
+</html>

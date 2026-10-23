@@ -1,0 +1,1098 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>SU 中枢</title>
+<!--
+  SU 中枢 · 常驻面板（SketchUp HtmlDialog 380×680）
+  设计基准：design-demos/direction-final.html（色彩排印系统 + 布局骨架）
+  回调契约：window.sketchup.*(参数?, requestId)，Ruby 注入 window.__onXxx(data, requestId)。
+    get_state() → {version, categories, plugins[], commands[]}
+    get_market() → {count, plugins[], errors[], sources[]}
+    run_command(id) / open_palette() / open_panel()
+    install_plugin(id) / update_plugin(id) → {ok, message}
+    add_source(url) → {ok, message, sources}
+    open_url(url)
+  连接失败显示重试提示；仅显式 ?demo=1 使用演示数据，与正式收藏及最近记录分开存储。
+  本地持久化：suhub.favs（收藏插件 id 数组）、suhub.recent（最近运行命令 {id,t} 数组）。
+  零网络资源，脚本随包附带，file:// 可打开。
+-->
+<style>
+/* ============ 基础与变量（取自 direction-final.html 的色彩排印系统） ============ */
+*{box-sizing:border-box;margin:0;padding:0}
+:root{
+  --ink:#0E1621; --sub:#5A6B80; --faint:#64748B;
+  --line:#E5EAF0; --line-strong:#D5DCE5;
+  --bg:#F4F6F8;
+  --accent:#0B5BD3; --accent-weak:#E8F0FC;
+  --warn:#B45309; --warn-weak:#FDF1E6;
+  --ok:#178A50;
+  --err:#A6302B; --err-weak:#FDEDED; --err-line:#F0C9C9;
+  --shadow-float:0 2px 4px rgba(14,22,33,.10),0 12px 32px rgba(14,22,33,.16);
+  --mono:"SF Mono","JetBrains Mono",Consolas,"Roboto Mono",monospace;
+  --ui:-apple-system,BlinkMacSystemFont,"Segoe UI","PingFang SC","Hiragino Sans GB","Microsoft YaHei","Noto Sans CJK SC","Helvetica Neue",Arial,sans-serif;
+}
+[hidden]{display:none!important}
+html,body{height:100%}
+body{font-family:var(--ui);color:var(--ink);background:#FFFFFF;overflow:hidden;-webkit-font-smoothing:antialiased;text-rendering:optimizeLegibility;display:flex;flex-direction:column}
+::selection{background:rgba(11,91,211,.18)}
+::-webkit-scrollbar{width:8px}
+::-webkit-scrollbar-thumb{background:#C9D2DC;border-radius:4px;border:2px solid #FFF;background-clip:padding-box}
+
+/* ============ 顶栏：品牌 + 连接状态 ============ */
+.panel-accent{height:3px;flex:none;background:var(--accent)}
+.p-head{display:flex;align-items:center;gap:8px;padding:12px 14px 8px;flex:none}
+.p-mark{width:26px;height:26px;border-radius:6px;background:var(--accent);display:grid;place-items:center;flex:none}
+.p-mark svg{width:15px;height:15px;color:#FFFFFF}
+.p-name{font-size:15px;font-weight:700;color:var(--ink);letter-spacing:.3px}
+.p-ver{font-family:var(--mono);font-size:12px;color:var(--faint);background:#F1F4F7;border:1px solid var(--line);padding:2px 6px;border-radius:4px}
+.p-status{margin-left:auto;display:flex;align-items:center;gap:6px;font-size:12px;color:var(--sub);white-space:nowrap}
+.p-status .dot{width:6px;height:6px;border-radius:50%;background:var(--ok);flex:none}
+.p-status.demo .dot{background:#A7B3C2}
+.p-demo{font-size:12px;color:var(--faint);background:#F1F4F7;border:1px solid var(--line);border-radius:4px;padding:2px 6px;white-space:nowrap}
+.icon-btn{width:22px;height:22px;border-radius:6px;border:1px solid var(--line);background:#FFFFFF;display:grid;place-items:center;cursor:pointer;flex:none}
+.icon-btn svg{width:12px;height:12px;color:var(--faint)}
+.icon-btn:hover{border-color:var(--line-strong);background:#F1F4F7}
+
+/* ============ 搜索框 ============ */
+.p-search{margin:0 14px 10px;height:34px;display:flex;align-items:center;gap:8px;padding:0 10px;flex:none;
+  background:#F7F9FB;border:1px solid var(--line-strong);border-radius:8px;transition:border-color .15s,box-shadow .15s}
+.p-search:focus-within{border-color:var(--accent);background:#FFFFFF;box-shadow:0 0 0 3px rgba(11,91,211,.10)}
+.p-search svg{width:13px;height:13px;color:var(--faint);flex:none}
+.p-search input{flex:1;min-width:0;background:none;border:none;outline:none;color:var(--ink);font-size:13px;font-family:var(--ui)}
+.p-search input::placeholder{color:#97A3B2}
+.kbd{font-family:var(--mono);font-size:12px;line-height:1;color:var(--sub);border:1px solid var(--line-strong);border-bottom-width:2px;background:#FFFFFF;border-radius:4px;padding:3px 6px;white-space:nowrap;flex:none}
+
+/* ============ 标签页 ============ */
+.p-tabs{display:flex;align-items:flex-end;gap:4px;height:36px;padding:0 14px;border-bottom:1px solid var(--line);flex:none}
+.tab{background:none;border:none;font-family:var(--ui);font-size:13px;color:var(--sub);padding:0 10px 8px;cursor:pointer;position:relative}
+.tab:hover{color:var(--ink)}
+.tab.active{color:var(--ink);font-weight:600}
+.tab.active::after{content:"";position:absolute;left:10px;right:10px;bottom:-1px;height:2px;background:var(--accent);border-radius:1px}
+.p-count{margin-left:auto;font-family:var(--mono);font-size:12px;color:var(--faint);padding-bottom:8px;white-space:nowrap}
+
+/* ============ 插件列表（全部 / 收藏 / 最近） ============ */
+.p-list{flex:1;min-height:0;overflow-y:auto;overflow-x:hidden;padding:4px 0 8px}
+.g-head{display:flex;justify-content:space-between;align-items:center;padding:10px 14px 4px;font-size:12px;font-weight:600;color:var(--sub);letter-spacing:.08em}
+.g-count{font-family:var(--mono);letter-spacing:0;font-size:12px;color:var(--faint);font-weight:400}
+.flat-head{padding:12px 14px 4px;font-size:12px;font-weight:600;color:var(--sub);letter-spacing:.08em}
+.row{display:flex;align-items:center;gap:10px;height:40px;padding:0 12px;margin:0 6px;border-radius:6px}
+.row:hover{background:#F4F7FA}
+.row.clickable{cursor:pointer}
+.row.clickable:hover{background:var(--accent-weak)}
+.row.exec{background:#EAF6EE}
+.r-ico{width:18px;height:18px;color:#4A5A6C;flex:none}
+.r-name{font-size:14px;font-weight:600;color:var(--ink);flex:none;letter-spacing:.01em;max-width:46%;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.r-desc{font-size:12px;color:var(--sub);flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.r-tag{flex:none;font-size:12px;color:var(--sub);border:1px solid var(--line);background:#FFFFFF;border-radius:4px;padding:1px 6px;white-space:nowrap}
+.r-time{display:none;font-family:var(--mono);font-size:12px;color:var(--faint);flex:none}
+.p-flat .r-time{display:inline}
+.r-star{flex:none;width:22px;height:22px;display:grid;place-items:center;border:none;background:none;cursor:pointer;color:#A7B3C2;border-radius:5px}
+.r-star:hover{background:#F1F4F7;color:var(--sub)}
+.r-star svg{width:14px;height:14px}
+.r-star.on{color:var(--accent)}
+.r-star.on svg{fill:currentColor}
+.r-btn{flex:none;font-family:var(--ui);font-size:12px;font-weight:600;color:#FFFFFF;background:var(--accent);border:none;border-radius:5px;padding:4px 12px;cursor:pointer;white-space:nowrap}
+.r-btn:hover{background:#0A4FB8}
+.r-btn:disabled{cursor:default;background:#EEF2F6;color:var(--sub)}
+.r-btn.loaded{background:#FFFFFF;color:var(--ok);border:1px solid #BFE3CB}
+.p-empty{padding:24px 14px;font-size:12px;color:var(--faint);text-align:center;line-height:1.8}
+
+/* ============ 插件市场 ============ */
+.p-market{flex:1;min-height:0;overflow-y:auto;overflow-x:hidden;padding:10px 8px 12px;background:#FFFFFF}
+.m-errors{margin:2px 2px 6px;padding:8px 10px;border:1px solid var(--err-line);background:var(--err-weak);border-radius:8px;display:flex;align-items:flex-start;gap:8px;font-size:12px;color:var(--err);line-height:1.55}
+.m-errors svg{width:14px;height:14px;flex:none;margin-top:2px}
+.m-errors .t{flex:1;min-width:0;word-break:break-all}
+.m-retry{flex:none;font-family:var(--ui);font-size:12px;font-weight:600;color:var(--err);background:#FFFFFF;border:1px solid var(--err-line);border-radius:5px;padding:2px 10px;cursor:pointer}
+.m-retry:hover{background:#FBEFEF}
+.m-chips{display:flex;gap:6px;flex-wrap:wrap;padding:0 2px 10px}
+.m-chip{font-size:12px;font-family:var(--ui);color:var(--sub);background:#F1F4F7;border:1px solid var(--line);border-radius:13px;padding:3px 10px;cursor:pointer}
+.m-chip:hover{color:var(--ink);border-color:var(--line-strong)}
+.m-chip.active{color:var(--accent);background:var(--accent-weak);border-color:#C9D9F2;font-weight:600}
+.m-card{display:flex;align-items:center;gap:10px;padding:9px 10px;margin:0 2px 6px;border:1px solid var(--line);border-radius:8px;background:#FFFFFF;transition:border-color .15s}
+.m-card:hover{border-color:var(--line-strong)}
+.m-ico{width:28px;height:28px;border-radius:6px;flex:none;background:#F1F4F7;border:1px solid var(--line);display:grid;place-items:center;color:#4A5A6C}
+.m-ico svg{width:16px;height:16px}
+.m-main{flex:1;min-width:0}
+.m-line1{display:flex;align-items:center;gap:6px;min-width:0}
+.m-name{font-size:14px;font-weight:600;color:var(--ink);white-space:nowrap;overflow:hidden;text-overflow:ellipsis;min-width:0}
+.m-ver{font-family:var(--mono);font-size:12px;color:var(--faint);flex:none;white-space:nowrap}
+.m-official{flex:none;font-family:var(--ui);font-size:12px;color:var(--accent);background:var(--accent-weak);border:1px solid #C9D9F2;border-radius:4px;padding:1px 6px;cursor:pointer;white-space:nowrap}
+.m-official:hover{background:#DCE9FA}
+.m-meta{display:block;font-size:12px;color:var(--faint);margin-top:2px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.m-desc{display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;overflow:hidden;font-size:12px;color:var(--sub);margin-top:2px;line-height:1.55}
+.m-btn{flex:none;font-family:var(--ui);font-size:12px;font-weight:600;color:#FFFFFF;background:var(--accent);border:none;border-radius:5px;padding:5px 12px;cursor:pointer;white-space:nowrap}
+.m-btn:hover{background:#0A4FB8}
+.m-btn:disabled{cursor:default}
+.m-btn.installed{background:#FFFFFF;color:var(--ok);border:1px solid #BFE3CB}
+.m-btn.upd{background:var(--warn-weak);color:var(--warn);border:1px solid #F0D9BF}
+.m-btn.upd:hover{background:#F8E7D3}
+.m-btn.busy{opacity:.65}
+.m-note{padding:18px 14px;font-size:12px;color:var(--faint);text-align:center;line-height:1.8}
+.m-addsrc{margin:8px 2px 4px;border:1px dashed #C4CDD8;border-radius:8px;overflow:hidden}
+.m-addsrc.open{border-style:solid;border-color:var(--line-strong)}
+.m-addsrc-btn{display:flex;align-items:center;gap:8px;padding:10px 12px;cursor:pointer;width:100%;background:none;border:none;font-family:var(--ui);text-align:left}
+.m-addsrc-btn:hover{background:var(--accent-weak)}
+.m-addsrc-btn svg{width:14px;height:14px;color:var(--faint);flex:none}
+.m-addsrc-btn .t{font-size:12.5px;font-weight:600;color:var(--sub)}
+.m-addsrc-btn .s{font-size:12px;color:var(--faint);margin-left:auto;white-space:nowrap}
+.m-src-form{padding:8px 10px 10px;border-top:1px solid var(--line);display:flex;flex-direction:column;gap:8px}
+.m-src-form input{width:100%;height:30px;padding:0 10px;font-size:12px;font-family:var(--ui);color:var(--ink);background:#F7F9FB;border:1px solid var(--line-strong);border-radius:6px;outline:none}
+.m-src-form input:focus{border-color:var(--accent);background:#FFFFFF;box-shadow:0 0 0 3px rgba(11,91,211,.10)}
+.m-src-actions{display:flex;gap:8px;justify-content:flex-end}
+.m-src-actions button{font-family:var(--ui);font-size:12px;font-weight:600;border-radius:5px;padding:4px 14px;cursor:pointer}
+#mSrcOk{background:var(--accent);color:#FFFFFF;border:none}
+#mSrcOk:hover{background:#0A4FB8}
+#mSrcCancel{background:#FFFFFF;color:var(--sub);border:1px solid var(--line-strong)}
+#mSrcCancel:hover{background:#F1F4F7;color:var(--ink)}
+
+/* ============ 底部栏 ============ */
+.p-foot{display:flex;align-items:center;gap:6px;flex-wrap:wrap;padding:9px 12px;border-top:1px solid var(--line);background:#FBFCFD;font-size:12px;color:var(--sub);flex:none}
+.upd-wrap{display:flex;align-items:center;gap:6px;min-width:0}
+.upd-wrap .dot{width:6px;height:6px;border-radius:50%;background:var(--warn);flex:none}
+.upd-txt{white-space:nowrap}
+.upd-btn{background:var(--warn-weak);border:1px solid #F0D9BF;color:var(--warn);font-size:12px;font-weight:600;font-family:var(--ui);cursor:pointer;padding:3px 8px;border-radius:5px;white-space:nowrap}
+.upd-btn:hover{background:#F8E7D3}
+.upd-btn:disabled{opacity:.6;cursor:default}
+.p-foot .spacer{flex:1}
+.set-btn{display:flex;align-items:center;gap:6px;background:none;border:none;color:var(--sub);font-size:12px;font-family:var(--ui);cursor:pointer;padding:4px 8px;border-radius:5px;white-space:nowrap}
+.set-btn:hover{background:#F1F4F7;color:var(--ink)}
+.set-btn svg{width:13px;height:13px}
+
+/* ============ 轻提示 ============ */
+.toast{position:fixed;left:50%;bottom:60px;transform:translateX(-50%) translateY(4px);background:var(--ink);color:#FFFFFF;font-size:12px;line-height:1.5;padding:8px 14px;border-radius:6px;box-shadow:var(--shadow-float);opacity:0;transition:opacity .18s ease-out,transform .18s ease-out;pointer-events:none;z-index:50;max-width:88%;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.toast.show{opacity:.97;transform:translateX(-50%) translateY(0)}
+.p-status.error .dot{background:var(--err)}
+.p-empty button{margin-top:10px}
+.row.keyboard{outline:2px solid var(--accent);outline-offset:-2px;background:var(--accent-weak)}
+.toast{white-space:normal;overflow-wrap:anywhere;max-height:180px;overflow:hidden}
+button:focus-visible,.row:focus-visible{outline:2px solid var(--accent);outline-offset:2px}
+.settings-shade{position:fixed;inset:0;background:rgba(14,22,33,.22);z-index:40;display:flex;align-items:center;justify-content:center;padding:12px}
+.settings-box{width:100%;max-width:480px;max-height:calc(100vh - 24px);background:#FFF;border:1px solid var(--line-strong);border-radius:10px;box-shadow:var(--shadow-float);display:flex;flex-direction:column;font-size:12px}
+.settings-head{display:flex;align-items:center;justify-content:space-between;padding:12px 14px;border-bottom:1px solid var(--line)}
+.settings-head strong{font-size:14px}
+.settings-body{padding:12px 14px;overflow:auto;min-height:0}
+.settings-note{color:var(--sub);line-height:1.7;margin-bottom:10px;overflow-wrap:anywhere}
+.settings-label{display:block;font-weight:600;margin:16px 0 6px}
+.settings-box input,.settings-box select,.settings-box textarea{font:inherit;color:var(--ink);background:#F7F9FB;border:1px solid var(--line-strong);border-radius:5px;padding:6px;min-width:0;max-width:100%}
+.settings-box textarea{width:100%;resize:vertical;margin-bottom:6px}
+.shortcut-edit{border-bottom:1px solid var(--line);padding:0 0 10px;margin:0 0 10px;display:grid;grid-template-columns:minmax(0,1fr) 72px 26px;gap:6px}
+.shortcut-edit .shortcut-target{grid-column:1 / -1;width:100%}
+.settings-secondary{border:1px solid var(--line-strong);background:#FFF;border-radius:5px;padding:5px 9px;color:var(--sub);font:inherit;cursor:pointer}
+.settings-actions{padding:10px 14px;border-top:1px solid var(--line);display:flex;justify-content:flex-end;gap:8px}
+.settings-error{color:var(--err);background:var(--err-weak);padding:8px;border-radius:5px;line-height:1.6;overflow-wrap:anywhere}
+.diagnostics-shade{align-items:stretch;justify-content:flex-end;padding:0}
+.diagnostics-box{max-width:600px;max-height:100%;border-radius:0;border-top:3px solid var(--accent);min-width:0}
+.diagnostics-body,.host-updates-body{overflow-x:hidden;overflow-wrap:anywhere;line-height:1.6}
+.diagnostics-summary{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:8px;margin:12px 0}
+.diagnostics-metric{border:1px solid var(--line);border-radius:6px;padding:8px 10px;color:var(--sub)}
+.diagnostics-metric b{display:block;font:600 21px var(--mono);color:var(--ink)}
+.diagnostics-body h3,.diagnostics-body summary,.host-updates-body h3{font-size:13px;font-weight:600;margin:16px 0 6px}
+.diagnostics-body summary{cursor:pointer}
+.diagnostics-item{list-style:none;border-top:1px solid var(--line);padding:9px 0}
+.diagnostics-item-head{display:flex;align-items:baseline;flex-wrap:wrap;gap:6px}
+.diagnostics-item-head strong{min-width:0;flex:1;overflow-wrap:anywhere}
+.diagnostics-badge{font-size:12px;border:1px solid var(--line);border-radius:4px;padding:0 5px;color:var(--sub);background:#F7F9FB}
+.diagnostics-badge.completed{color:var(--ok);border-color:#BFE3CB}
+.diagnostics-badge.failed,.diagnostics-badge.unavailable{color:var(--err);background:var(--err-weak)}
+.diagnostics-badge.started{color:var(--warn);background:var(--warn-weak)}
+.diagnostics-meta{color:var(--sub);font-size:12px;overflow-wrap:anywhere}
+.diagnostics-code{font-family:var(--mono)}
+.diagnostics-empty{color:var(--sub);padding:10px 0}
+.diagnostics-box .settings-actions{flex-wrap:wrap}
+.host-update-notice{width:100%;display:flex;align-items:center;gap:8px;overflow-wrap:anywhere;color:var(--accent)}
+.host-update-notice span{flex:1;min-width:0}
+.host-update-status{padding:10px;border:1px solid var(--line);border-radius:6px;background:#F7F9FB;margin:12px 0}
+.host-update-status[data-state="available"]{border-color:#C9D9F2;background:var(--accent-weak)}
+.host-update-facts{display:grid;grid-template-columns:80px minmax(0,1fr);gap:8px;margin:14px 0}
+.host-update-facts dt{color:var(--sub)}
+.host-update-facts dd{min-width:0;overflow-wrap:anywhere}
+.host-update-notes{white-space:pre-wrap;overflow-wrap:anywhere;font:inherit;color:var(--ink);margin:8px 0 16px}
+.host-update-steps{padding-left:20px;line-height:1.8}
+.host-update-actions{display:flex;gap:8px;flex-wrap:wrap;margin:10px 0}
+@media(min-width:620px){.diagnostics-summary{grid-template-columns:repeat(4,minmax(0,1fr))}}
+.plugin-toggle{display:flex;align-items:center;gap:8px;padding:5px 0;color:var(--sub)}
+</style>
+</head>
+<body>
+<div class="panel-accent"></div>
+
+<header class="p-head">
+  <span class="p-mark" aria-hidden="true"><svg viewBox="0 0 15 15" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"><path d="M3.2 3.2h3.4v3.4H3.2zM8.4 3.2h3.4v3.4H8.4zM3.2 8.4h3.4v3.4H3.2z"/><circle cx="11.8" cy="11.8" r="1.1" fill="currentColor" stroke="none"/></svg></span>
+  <span class="p-name">SU 中枢</span>
+  <span class="p-ver" id="pVer">v—</span>
+  <span class="p-status" id="pStatus"><span class="dot"></span><span id="pConn">连接中…</span></span>
+  <span class="p-demo" id="pDemo" hidden>演示数据</span>
+  <button class="icon-btn" id="pCollapse" title="收起面板" aria-label="收起面板"><svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"><path d="M10 3.2 5.6 8l4.4 4.8"/></svg></button>
+</header>
+
+<div class="p-search">
+  <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" aria-hidden="true"><circle cx="7" cy="7" r="4.6"/><path d="M10.5 10.5 14 14"/></svg>
+  <input id="pSearch" placeholder="搜索插件、分类、拼音缩写" aria-label="搜索插件、分类、拼音缩写">
+  <span class="kbd" aria-hidden="true">Ctrl F</span>
+</div>
+
+<nav class="p-tabs" id="pTabs">
+  <button class="tab" data-tab="fav">收藏</button>
+  <button class="tab" data-tab="recent">最近</button>
+  <button class="tab active" data-tab="all">全部</button>
+  <button class="tab" data-tab="market">市场</button>
+  <span class="p-count" id="pCount"></span>
+</nav>
+
+<div class="p-list" id="pList"></div>
+<div class="p-market" id="pMarket" hidden>
+  <div class="m-errors" id="mErrors" hidden></div>
+  <div class="m-chips" id="mChips"></div>
+  <div id="mCards"></div>
+  <div class="m-addsrc" id="mAddSrc">
+    <button class="m-addsrc-btn" id="mAddSrcBtn" type="button">
+      <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" aria-hidden="true"><path d="M8 3.2v9.6M3.2 8h9.6"/></svg>
+      <span class="t">添加插件源</span>
+      <span class="s">JSON 插件源 · 本地文件</span>
+    </button>
+    <div class="m-src-form" id="mSrcForm" hidden>
+      <input id="mSrcInput" placeholder="catalog.json 的网址或本机路径" aria-label="插件源地址" spellcheck="false">
+      <div class="m-src-actions">
+        <button id="mSrcCancel" type="button">取消</button>
+        <button id="mSrcOk" type="button">添加</button>
+      </div>
+    </div>
+  </div>
+</div>
+
+<footer class="p-foot">
+  <div class="host-update-notice" id="hostUpdateNotice" role="status" hidden><span id="hostUpdateNoticeText"></span><button class="settings-secondary" id="hostUpdateNoticeOpen" type="button">查看更新</button></div>
+  <span class="upd-wrap" id="pUpd" hidden>
+    <span class="dot" aria-hidden="true"></span>
+    <span class="upd-txt" id="pUpdTxt"></span>
+    <button class="upd-btn" id="pUpdAll" type="button">全部更新</button>
+  </span>
+  <span class="spacer"></span>
+  <button class="set-btn" id="pDiagnostics" type="button" aria-haspopup="dialog" aria-controls="diagnosticsShade" aria-expanded="false">运行与诊断</button>
+  <button class="set-btn" id="pHostUpdates" type="button" aria-haspopup="dialog" aria-controls="hostUpdatesShade" aria-expanded="false">关于与更新</button>
+  <button class="set-btn" id="pSet" type="button" title="设置"><svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" aria-hidden="true"><circle cx="8" cy="8" r="2.1"/><path d="M8 1.8v2M8 12.2v2M1.8 8h2M12.2 8h2M3.6 3.6l1.5 1.5M10.9 10.9l1.5 1.5M12.4 3.6l-1.5 1.5M5.1 10.9l-1.5 1.5"/></svg>设置</button>
+  <button class="icon-btn" id="pPaletteBtn" title="命令面板" aria-label="打开命令面板"><svg viewBox="0 0 15 15" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"><path d="M3.2 3.2h3.4v3.4H3.2zM8.4 3.2h3.4v3.4H8.4zM3.2 8.4h3.4v3.4H3.2z"/><circle cx="11.8" cy="11.8" r="1.1" fill="currentColor" stroke="none"/></svg></button>
+</footer>
+
+<div class="toast" id="toast" role="status" aria-live="polite" hidden></div>
+<div class="settings-shade diagnostics-shade" id="hostUpdatesShade" hidden>
+  <section class="settings-box diagnostics-box" role="dialog" aria-modal="true" aria-labelledby="hostUpdatesTitle">
+    <header class="settings-head"><strong id="hostUpdatesTitle">关于与更新</strong><button id="hostUpdatesClose" class="icon-btn" aria-label="关闭关于与更新">×</button></header>
+    <div class="settings-body host-updates-body">
+      <p class="settings-note">SU 中枢 · 通用建模与插件管理</p>
+      <dl class="host-update-facts"><dt>当前版本</dt><dd id="hostUpdatesCurrent">—</dd><dt>公共仓库</dt><dd id="hostUpdatesRepository">未配置</dd><dt>更新渠道</dt><dd id="hostUpdatesChannel">—</dd><dt>发布版本</dt><dd id="hostUpdatesVersion">—</dd><dt>发布时间</dt><dd id="hostUpdatesPublished">—</dd></dl>
+      <div class="host-update-status" id="hostUpdatesStatus" role="status"><strong id="hostUpdatesStateLabel"></strong><p id="hostUpdatesMessage"></p></div>
+      <p class="settings-note" id="hostUpdatesCompatibility"></p>
+      <div class="host-update-actions"><button class="settings-secondary" id="hostUpdatesRelease" type="button" hidden>查看 GitHub 发布页</button><button class="r-btn" id="hostUpdatesDownload" type="button" hidden>下载 RBZ</button></div>
+      <div class="settings-error" id="hostUpdatesActionError" role="alert" hidden></div>
+      <section id="hostUpdatesChecksumSection" hidden><h3>发行方提供的 SHA-256</h3><p class="diagnostics-code" id="hostUpdatesChecksum"></p><p class="settings-note">此值来自发行信息；当前面板尚未验证你下载到本机的文件，也不代表数字签名验证。</p></section>
+      <h3>发布说明</h3><pre class="host-update-notes" id="hostUpdatesNotes">尚未读取发布说明。</pre>
+      <h3>如何安装更新</h3><ol class="host-update-steps"><li>下载 RBZ 后，在 SketchUp 的“扩展程序管理器”选择“安装扩展程序”，打开下载的 RBZ。</li><li>安装前保存模型；安装完成后重启 SketchUp，再检查当前版本。</li></ol>
+      <p class="settings-note">下载按钮在浏览器中打开 GitHub 下载地址。此处不会直接替换正在运行的插件。</p>
+    </div>
+    <footer class="settings-actions"><button class="r-btn" id="hostUpdatesCheck" type="button">检查更新</button></footer>
+  </section>
+</div>
+<div class="settings-shade diagnostics-shade" id="diagnosticsShade" hidden>
+  <section class="settings-box diagnostics-box" role="dialog" aria-modal="true" aria-labelledby="diagnosticsTitle">
+    <header class="settings-head"><strong id="diagnosticsTitle">运行与诊断</strong><button id="diagnosticsClose" class="icon-btn" aria-label="关闭运行与诊断">×</button></header>
+    <div class="settings-body diagnostics-body">
+      <p class="diagnostics-meta" id="diagnosticsSnapshot" role="status"></p>
+      <div class="settings-error" id="diagnosticsRefreshError" role="alert" hidden></div>
+      <div class="diagnostics-summary" id="diagnosticsSummary"></div>
+      <h3>设置存储</h3><p id="diagnosticsStorage"></p><ul id="diagnosticsStorageReasons"></ul>
+      <h3>宿主诊断</h3><ul id="diagnosticsErrors"></ul>
+      <h3>本次 SketchUp 会话的命令结果</h3>
+      <p class="settings-note">最多显示最近 30 次调用。已启动表示工具已激活或结果尚未确认，不代表操作完成；关闭 SketchUp 后清空。完成的命令另可在“最近”查找。</p>
+      <ul id="diagnosticsResults"></ul>
+      <details open><summary>已安装插件状态</summary><p class="settings-note">依赖或版本问题需按提示处理。待重启项请先保存模型，再重启 SketchUp。</p><ul id="diagnosticsPlugins"></ul></details>
+    </div>
+    <footer class="settings-actions"><button class="settings-secondary" id="diagnosticsSettings">打开设置</button><button class="r-btn" id="diagnosticsRefresh">刷新状态</button></footer>
+  </section>
+</div>
+<div class="settings-shade" id="settingsShade" hidden>
+  <section class="settings-box" role="dialog" aria-modal="true" aria-labelledby="settingsTitle">
+    <header class="settings-head"><strong id="settingsTitle">设置</strong><button id="settingsClose" class="icon-btn" aria-label="关闭设置">×</button></header>
+    <div class="settings-body">
+      <p class="settings-note">快捷入口会显示在命令面板中。选择已安装命令，或填写网页地址。</p>
+      <div id="settingsShortcuts"></div><button class="settings-secondary" id="shortcutAdd" type="button">添加快捷入口</button>
+      <label class="settings-label" for="settingsSources">插件源（每行一个地址）</label><textarea id="settingsSources" rows="4" spellcheck="false" placeholder="https://…/catalog.json"></textarea>
+      <p class="settings-note">留空使用随附的本地插件源。支持 http(s)、file:// 或本机绝对路径，每行一个。</p>
+      <p class="settings-label">插件启用状态</p><div id="settingsPlugins"></div>
+      <div class="settings-error" id="settingsError" role="alert" hidden></div>
+    </div>
+    <footer class="settings-actions"><button class="settings-secondary" id="settingsCancel">取消</button><button class="r-btn" id="settingsSave">保存设置</button></footer>
+  </section>
+</div>
+
+<!-- 极简线性 SVG 图标库（16×16，1.5px 描边，取自 direction-final.html） -->
+<svg width="0" height="0" style="position:absolute" aria-hidden="true">
+  <defs>
+    <symbol id="i-search" viewBox="0 0 16 16"><circle cx="7" cy="7" r="4.6"/><path d="M10.5 10.5 14 14"/></symbol>
+    <symbol id="i-plus" viewBox="0 0 16 16"><path d="M8 3.2v9.6M3.2 8h9.6"/></symbol>
+    <symbol id="i-star" viewBox="0 0 16 16"><path d="M8 2.7l1.7 3.4 3.8.55-2.75 2.68.65 3.78L8 11.2l-3.4 1.8.65-3.78L2.5 6.65l3.8-.55z"/></symbol>
+    <symbol id="i-alert" viewBox="0 0 16 16"><circle cx="8" cy="8" r="5.6"/><path d="M8 4.9v3.4"/><circle cx="8" cy="10.9" r=".5" fill="currentColor" stroke="none"/></symbol>
+    <symbol id="i-cube" viewBox="0 0 16 16"><path d="M8 2.4 13.4 5.4v5.2L8 13.6 2.6 10.6V5.4Z"/><path d="M2.6 5.4 8 8.4l5.4-3M8 8.4v5.2"/></symbol>
+    <symbol id="i-push" viewBox="0 0 16 16"><path d="M4.6 2.2h6.8v4.4H4.6zM6 13.8l2-3.2 2 3.2M8 6.6v4"/><path d="M4.4 10h7.2"/></symbol>
+    <symbol id="i-fillet" viewBox="0 0 16 16"><path d="M12 2.2H4.6c-.8 0-1.4.6-1.4 1.4v7.6c0 .8.6 1.4 1.4 1.4H12"/><path d="M7.6 2.2v1.9a3.3 3.3 0 0 0 3.3 3.3h1.9"/></symbol>
+    <symbol id="i-group" viewBox="0 0 16 16"><path d="M2 3.5C2 2.7 2.7 2 3.5 2h9c.8 0 1.5.7 1.5 1.5v5c0 .8-.7 1.5-1.5 1.5h-2.7V13H3.5c-.8 0-1.5-.7-1.5-1.5z"/><path d="M9 6h3v3"/></symbol>
+    <symbol id="i-chart" viewBox="0 0 16 16"><path d="M3 13.4h10M5 13V8M8.5 13V4.6M12 13v-6"/></symbol>
+    <symbol id="i-rename" viewBox="0 0 16 16"><path d="M7.4 12.6H2.6M5.4 2.8h2.2v7.8M6.5 2.8 3.4 11.4"/></symbol>
+    <symbol id="i-drop" viewBox="0 0 16 16"><path d="M8 2.4s4.2 4.6 4.2 7.6A4.2 4.2 0 0 1 8 14.2 4.2 4.2 0 0 1 3.8 10c0-3 4.2-7.6 4.2-7.6"/></symbol>
+    <symbol id="i-spray" viewBox="0 0 16 16"><circle cx="7.4" cy="7.4" r="4.4"/><path d="M4.8 3.2l.8-.9M9.8 3l.9-.8M3 6.4l-1.2-.1M3 9.6l-1.2.1M11.6 6.4l1.2-.1M12 9.6l1.2.1"/></symbol>
+    <symbol id="i-cylinder" viewBox="0 0 16 16"><ellipse cx="8" cy="3.4" rx="4.4" ry="1.9"/><path d="M3.6 3.4v9.2c0 1 2 1.9 4.4 1.9s4.4-.9 4.4-1.9V3.4"/></symbol>
+    <symbol id="i-slice" viewBox="0 0 16 16"><path d="M8 2.2 13 4.8v6.4L8 14 3 11.2V4.8z"/><path d="M3 4.8 8 7.4l5-2.6M8 7.4V14"/><path d="M2 8.6 13 11.6" stroke-dasharray="2.4 1.8"/></symbol>
+    <symbol id="i-terrain" viewBox="0 0 16 16"><path d="M2 5.6c1.8 0 1.8 2.4 3.6 2.4S7.4 5.6 9.2 5.6s1.8 2.4 3.6 2.4M2 10.6c1.8 0 1.8 2 3.6 2s1.8-2 3.6-2 1.8 2 3.6 2"/></symbol>
+    <symbol id="i-door" viewBox="0 0 16 16"><rect x="2.6" y="2.6" width="10.8" height="10.8" rx=".6"/><path d="M6 5.4h5.4"/><path d="M5.2 2.6v10.8M5.2 7.4l2.4 1.6"/></symbol>
+    <symbol id="i-curtain" viewBox="0 0 16 16"><path d="M3 2.4v11.2M6.6 2.4v11.2M10.2 2.4v11.2M13.8 2.4v11.2"/></symbol>
+    <symbol id="i-grid" viewBox="0 0 16 16"><rect x="2.2" y="2.2" width="4.6" height="4.6"/><rect x="9.2" y="2.2" width="4.6" height="4.6"/><rect x="2.2" y="9.2" width="4.6" height="4.6"/><rect x="9.2" y="9.2" width="4.6" height="4.6"/></symbol>
+    <symbol id="i-trash" viewBox="0 0 16 16"><path d="M3 4.2h10M6 4.2V3c0-.6.4-1 1-1h2c.6 0 1 .4 1 1v1.2M4.2 4.2l.7 8.6c0 .9.7 1.6 1.6 1.6h3c.9 0 1.6-.7 1.6-1.6l.7-8.6M6.8 7v4.6M9.2 7v4.6"/></symbol>
+    <symbol id="i-import" viewBox="0 0 16 16"><path d="M8 2.8v7M5.4 7.4 8 10l2.6-2.6M3 12.6c-.6 0-1 .4-1 1v1.8c0 .6.4 1 1 1h10c.6 0 1-.4 1-1v-1.8c0-.6-.4-1-1-1"/></symbol>
+    <symbol id="i-layers" viewBox="0 0 16 16"><path d="M8 2.6 14 5.4 8 8.2 2 5.4Z"/><path d="M2 8.6 8 11.4 14 8.6M2 11.8 8 14.6 14 11.8"/></symbol>
+    <symbol id="i-bubble" viewBox="0 0 16 16"><circle cx="8" cy="8" r="6"/><circle cx="5.8" cy="6" r="1.2"/></symbol>
+    <symbol id="i-face" viewBox="0 0 16 16"><path d="M4 2.8h8v10.4H4z"/><path d="M4 2.8c2.4 1 4.8 1 8 0M8 13.2v1.8M6.2 6.4h3.6"/></symbol>
+    <symbol id="i-link" viewBox="0 0 16 16"><path d="M7.2 12.8 12.8 7.2M4.6 13.4l-1 1a3.6 3.6 0 0 0 5.1 5.1l3.2-3.2a3.6 3.6 0 0 0 0-5.1c-1.1-1.1-2.7-1.4-4.1-.9M15.4 6.6l1-1a3.6 3.6 0 0 0-5.1-5.1L8.1 3.7a3.6 3.6 0 0 0 0 5.1c1.1 1.1 2.7 1.4 4.1.9"/></symbol>
+    <symbol id="i-sparkle" viewBox="0 0 16 16"><path d="M8 1.8v4M8 10.2v4M1.8 8h4M10.2 8h4M3.6 3.6l2.9 2.9M9.5 9.5l2.9 2.9M12.4 3.6 9.5 6.5M6.5 9.5l-2.9 2.9"/></symbol>
+  </defs>
+</svg>
+
+<script src="js/command-outcomes.js"></script>
+<script src="js/diagnostics.js"></script>
+<script src="js/host-updates.js"></script>
+<script>
+(function(){
+'use strict';
+
+/* ============ 工具函数 ============ */
+var $=function(s){return document.querySelector(s)};
+function esc(s){
+  return String(s==null?'':s).replace(/[<>&"']/g,function(ch){
+    return {'<':'&lt;','>':'&gt;','&':'&amp;','"':'&quot;',"'":'&#39;'}[ch];
+  });
+}
+function ico(id,cls){
+  return '<svg class="'+(cls||'r-ico')+'" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><use href="#'+id+'"/></svg>';
+}
+function validSource(value){return /^https?:\/\/.+/i.test(value)||/^file:\/\//i.test(value)||/^[a-z]:[\\/]/i.test(value)||/^\/[^/]/.test(value);}
+
+/* ---------- 拼音首字母（内嵌表，覆盖 U+4E00..U+9FFF） ---------- */
+var PY_INITIALS = 'ydkqsxhwzssxqbymgcczqpssqbycdscdqldylybsgjgypzjjfgcclzzbwdwzjljpfyynwjjtmyyzwzhflyppqhgccyhymjqyxxgjx0sdsjnjjsmhml0rxyfsnqsyzzqzgqllyjlgyzssecykyyhqwjssggyxyqyjtwkdjhychmyxjtlxjyqbyxdldwrrjjwysrldzjpcbzjjbrcfjlbczstzfxxthtrqgybdlyccscymmrfcyqzpwwjjyfcrwfdfzqpyddwyxkyjawjffxjpdftzyhhycyswccyqsclcxxwzcxnbgnnxbxlzsqsbsqpysyzdhmdzbqbzcwdzzyytzhbtsyyfzgntnxqywqykbphglxgybfmjebjhhgqtjcysxstkzglyckglysmzxyalmeldccxgzyrcxsdltjzcqkcnnjwhjczzhqljststbnxbtyxceqxgkwjyflzqlyhjqspsfxlfpbysxxxydcczylllsjxfhjxpjbcffyabyxbhczbjyclwlczggbtssmdtjcxpthyqtgljscjfzkjzjqnlzwlslhdzbwjncjzyzsqnycqyrzcjjwybrtwpyftwexcskdzctbxhyzcayjxzcfbzzmjyxxcdczottbzljwfckszsxfyrlnyjmbdthjxsqqccsbxrytsyfbjdztgbcnclcyzzpsacyzqscjcshzqydxlbpjllmqxtydzxsqjtzpxlcglqczwjbhctdjjsfxyejjtlbgxsxjmyjjqpfzasyjncydjxkjcdjszcbartcclnjqmwnqnclllkbybzzsyhqcltwlccrshllzntylnewyzyxczxxgdkdmtcedeqtsyys0d0d00sd0j0hrwnqlybglxhlgtgxbqjdz0yjsjyjcjmrnymgrcjczgjmzmgxmmryxkjnymsgmzzymklfxmbdtgfbhcjykylpfmdxlqjjsmtqgzsjlqdldgjycalcmzcsdjllnxdjffffjczfmzffpfkhkgdpkxktacjdhhzdddrrcfqyjkqccwjdxhwjlyllzgcfcqdsmlzpbjjplsbcjggdckkdezsqcckjgcgkdjtjllzycxklqccgjcltfpcqczgwbjdqydjjbyjhsjdzwgfsjgdkccctllpspkjgqjhzzljplgjgjjthjjyjzczmlzlyqbgjwmljkxzdznjqsyzmljlljkywxmkjlhskjgbmclyymkxjqlbmclkmdxxkwyxwslmlpsjqjjqxyqfjtjdxmxxllcrqbsyjbgwy0xggbcyxpjtgpepfgdjgbhbncfjyzjkjkhxqfgqzkfhygkhdkllsdjjxpqykybnqsxqnszswhbsxwhxwbzzxdmndjbsbgbbzklylxgwxjjwyqzmywsjqlcjxxjqwjeqxscwetlzhlyyysdzpyqyzcmtlshtzcfycyxyljsdcjjagyslcqlyyysglrqq0ldxzsccccadycjysfsgbfrlszqsbxjpsjwsdrckgjlgtkzjzbdktcsyqpyhstcldj0hmxmcgxyzhjddtmhltxzxylymohyjcltyfpqqjbfbdfehthsqhzywwcnxxcdwhhwgyjlegwdqcwgfjhcsntfydolbywhqwesjpwnmlrydzsztxyqpzgzwxhnxpyxshmdqjxztdppbfyhzhhjyfdzwkgkzbldntsxhqeegzdylzmmzyjzkszxkhkhtxexxwylyapsthxdwhzydpxagkydxbynhxkd0jnmyhylpmgocslnzhkxxlpzzlbmlsfbhhgcgyyggbhscyajtdwlxtzqcwzydqdqm0gd0llszhlsjzwfjhqswscelqajynytlsxthazgkzzsdhlacqzwwcsgqqtddyzbcchyqzflxpslzqgpzsznglydqtbdlxjtctajdkywnsyzljhhdzcwnhyzyomhychhhxhjkzwsxhdyxlyscqydpclyzwmyp0kxyjlkzhtyhsxqsysgxysmchktscrswjbwxsgzjlwwschs0hsqnhzsngndaqtbaalzzmsstdqjcjktscjaxplggxhhgoxzcxpdmmhldgtybysjmxhmrzplxjzckzxshflqxctdhxezfchzccdjtcjyxqhlxdhypjqxnlsyydzozjnyxqezysjyayjkypdgxddxsppyzndlthrhhydxzjjhtcxmctlhbynyhmhzllxnxmylllpdcppxhmxdkycyrdltxjchhznxzlcclylnzsxzjyzlnn0lwhyqsnjhxynttdkyjpychhyegkcwtwlgqrlggtgtygyhpyhylqyqgcwyqkpyyyttttlhyhlltyttsplkyzwgywgpydqqzzdqxskcqnmjjzzbxyqmjrtfbbtkhzkbjdjjkdjjtlbwfzpptkqtztgpdgntpjyfalqmkgxfdclzfhzclllladpmxdjhlcclgyhdzfgyddgcyyfgydxkssebdhykdkdkhnaxxybpbyyhxccgabdqyjxdmljcyqzllpchbsxgjyndybyqspqwjlzkcddtaccbxzdyzypjzqsjnkktknjdjgyepgtlfyqkasdntcyhblgdzhbbydmjregkzyheyybjmcdtyfzjjfgcjpljhldwxjjkytcyksssmtwcttqzlpbszdtwzxgzagyxtywxlhlcpbclloqmmzsslcmbjqszzkydczxgqjdsmcytzqqlwzqzxssfpktfqmddzdsddtdwfhtdyzjaqjqkypbdjyyxtljhdrqxxxhaydhrjlklytwhllrllrcxylbwsrszzsymkzzhhkyhxksmcsyzgcjfbzbsqlfcxxxnxkxwymsddyq0ggqmmyhcdcttfgyyhgstttybykjdhkyjbelhdypjqnfxfdqkzhqksbyjtzbxhfdxbdaswpawajldyjsfhbldnndnqjtjnchxfjsrfwhzfmdrfjyhwzpdjkzyjymfcyznynxfbytfwfwygdbnzzzdnytxzemmqbsqehxfzmbmflzzsrsymjgsxwzjsprydjsjgxhjjgmjjynzzjxhgjkymlpeyycsysgqzswhwlyrjlpxslcxmfswwkcctnxnynpnjszhdzeptmmwywxyysywlxjqzqxzdclaeelmcpjpclwbxsqhfwwtffjtnqjhjqdxhwlbyzcfjlnlhyyjldxhhycstdywnrjtxywdrmdrqhwqcmfjdyzmhmayxjwmyzqtxtlmrspwwchajbxtgcypxyyrrclmpamgkqjszyjrmyjsnxtplnbappypylxmyzkynldgyjzczhnlmzhhanqmpgwqtzmxxmllhgdzxyhxkrxycjmffxyhjfsbssqlhxndycannmtcjcyprrnytyqnyymbmsxndlylysljnlxysxhmllyzlzjjjkyzzcsfbzxxmstbjgnxyzhlsnmcqscyznfzlxbrnnnylmnrtgzqysatswryhyjzmzdhzgzdwybsscskxsyhytsxgcqgxzzbhyxjscrhmkkbsczjyjymkqhzjfnbhmqhysnjnzybknqmcjgqhwlsnzswxkhljhyybqcbfcdsxdldspfzfskjjzwzxsddxjseeegjscssmgclxxhywyllylwwwgydkzjgggtggsycknjwnjpcxbjjtqtjwdsspjxzxnzxwmelptfsxtllxcljxjjljsxctnswxlahhhyqrwhsycsqrybyaywjejqfwqcqqcjqgxaldbzzyjgkgxpltjyfxjltpadkyqhpmatldpdzkxmtxybhklefxdleegqtymsawhzmlftwyqxlyjzljeeyxbqqffnlyxrdsctgjgxywlkllxqkcctlhjlqmkkzgcyygllljdzgydhzwxpysjbzjdzgyzzhywyfqytyzszyezklymhjjhtsmqwyzlkyywzcsrkqyqltcxwcdrjklwskzwbdcqyncjsrszjlkcdcdtlzzzacqqwzddxyplxcbqjylzlllqdtzjjyjyjzyxnyyynxjxkgdazwyrdljyyyrjlglldyxjcykywnqcclddnyyykyckczhjxcclgzqjgjwggcqqjysbzzxyjxj0xjfzbsbdsfnsfpzxhdwztdmpptflzzbzdmyypqjrsdzsqzsqxbdgcpzjwdwcsqzgmzhzzmwwfybpdgphtmjthzsmmbgzmbzjcfzhfcbbzmqcfmbcmcjxlgpnjbbxgyhyyjgptzgzmqbqdcgybjxlwzkydpdymgcftpfxyztzxdzxtgkmtybbclbjaskytssqyymscxfjeglsllszbqjjjaklyldlycctsxmcwfgkkbqxlllljyxtyltyxytdpjhnhgnkbyqnfjyyzbyyessessgdyhfhwtcjbsdzjtfdmxhcnjzymjwsrxjdzjqpdqbbsdjggfbkjbxdgqhmgwjjjgdllthzhhyyyyhhsxwtyyyccbdbpypzyccztjpzywcbdlfwzcwjdxxhyhlhwczxjtcclcdpxdjczczlyxjjsjbhfxwpywxzptdzzbdzcjhjhmlxbqxxbylrddgjrrctttgysczwmxfytmmzcwjwxjywcskybzqccttqnhxnkxxkhkfhtswoccjybcmpzzykbnnzpbthhcdlsyddytyfjpxyngfxbyqxcbhxcbsxtyzdm0ysnxsxlhkmzxlthdhkghxxsshqyhhcjyxglhzxcsnhekdtgqxqypkdheqtykcnymyyypkqyytjxzlthhqtbyqhxbmyhsqckwwyllhcyylnneqxqwmcfbdccmljggxdqktlxkgnqcdgzjwyjjlyhhjtttnwchhxcxwheszjydjccdbqcdgdnyxzdhcqrxcbmztqcbxwgqwyybxhmbymyqdyecmkkyaqyngycslfykkqgyssqyshjgjcnxkzycxsbkyxhyylctycxqthysmgscpmmgcccccmtztasmgqzjhklosqylswtmqsyqkdzljqqyplcycztcqqpbbqjzclpkhqcyyxxdtdddsjcxffllchqxmjlwcjcxtspycxndtjshjwxdqqjckxyamylsjhmlalygxcyydmamdqmlmcznnyybzkkyflmchcmlhxrcjjhsylnmtjggggywjxsrxcwjgjqhqzdqjdzjjzkjkgdzqgjjyjylxzxxcdqhhhestmhlfsbdjsyyshfyssczqlpbdrfrztzdkyyhsctgkwdqzrkmsynbcrxqbjyfbxpzzedzcjykbcjwhyjbqdzywnyszptdkzpfpbaztklqyhbbzpnbptyzzybhnydcpjmmcycqmzjfzzdcmnlfpbplngqjtbttajzpzbbdnjkljqylnbzqhksjznggqsczkyxchpzsnbcgzkddzqanzgjkdrtlzldwjljzlyztxndjzjhxyatncbgtzcsskmnjbjytsrwxcpjwjjtkhtzplbhsnjzsyjbwbzyzlstlsbjhdwwqpslmmfbjdwajyzccjtbnnrzwqxcdslqgdsdpdzhjtqqpsqlyyjzlgnhszlctcbjtktyczjtqkbpjlgmjzdmcsgpynjzjjyyknhrpwszxmtncszzyxhbyhyzaxywkcjtllckjjtjhgcxsxyqyczbywblwqcglzgjgqrqcczssbcrbcskydznljsqgxssjmecnstjtpbdlthzwhqwqtzexnqczgwesgssbybstscsjccgbfsdqszlccglllzghzqthczmjgyzaznmckcstjmmzckbjygqljyjppldxrgzyxccsnhshhdznlzhzjjcddcbcjxlbfqbczzwpqdnhxljcthqzjgylnlszzpcjdscqqhjqkdxqpbajyemsmjtzdxlcjyryynhjbngzzkmjxltbsllrtpylcsznxjhllhyllqqzqlxymrcwcxsljmczltzldwdjjllnzggqxppskygyggbfzpdkmwghcxmcgdxjmcjsdycabxjdlnbcddygskydqtxdjjyxmsaqazdcfslqxyjsjzylblxxwxqqzbjzlfbblylwdsljhxjyzjwtdjcyfqzqzzdzsxzzqlzcdzfchysplmpqzmlpplffxjjnzzylsj0yqzfpfzksywjjjhrdjzzxtxxglghtdxcskyswmmtcwybazbjkshfhgcxmhfqhyxxyzftsjyzbxyxpzlchmzmbxhzzssyfdmncwdabazlxktcshhxkxjjzjsthygxsxyyhhhjwxkzxssbzzwwhhcwtzzzpjxsnxqqjgzyzawllcwxzfxxyxyhxmkyyswsqmnjnaycyspmjkhwcqhylajjmzxhmmcnzhbhxclxtjpltxyjhdyylttxfszhyxxsjbjyayrsmxyplckdlyhlxrlnllstyzyyqygyhhsccsmzztzcxhyqfbyyrpfflfqtntszlljmhwtzjqyzwtllmlm0wmbzss0zrbpdddlqjjbxccsrzqqygwcsxfwzlxccrstdzmcyggdyqsgtjmwljmymmsyhfbjdgyxccpshxnzcsbsjwjgjmppwaffyfnxhydxzylremzgzcyhsszdlljcsqfzxxkpsxzgxjjjbmyyysnbtylbnlhpfzdcyfbmgqrrmsszxysgtznnydzzcdgbjafjbdknzblcsszbsgcycjszlmlrzzbzzldl0llysxsqcqlyxzlsgkbrxbrbzcycxzjzeeyfgklzlyyhgzsgzlfjhgtgwkraajyzkzqtsshjjxdcyz0yjlzyrzdqqhgjzxsscbtgjbbfrtjxllfqwjgslqtymblpzdxtzagbdhzzrbgjhwnjtjxlkscfsmwlsdqysjtxkzscfwjlbxfczlljzllqblcqmqqcgcdfpbbhzczjlpyygjdtgwdqfczqyyyqysrclqzfklzzzgffcqnwglhjycjjczlqzzyjbjzzbpdccmhjgxdqdgdlzq0fgpsytsdyfwwdjzjyzxyycjcyhzwpbygxrylybhkjksfxtjjmmckhlltnyymsxxyzpdjjycsycwmdjjkqyrhllqxpsgtlwycljscbxjyzfnmlrgjjtyzbsyzmsjyjhgfzqmsyxrszcwtlrtqzsstkxgqggsptgcdnjsgcqcqhmxggztqydjjzdlbzsxjlhrqgggthqscpyhjhhgnygkggcmjdzllcclxqsftgzslllmlcskctbljzzszmmnytpzsxqhjcjyqxyexzqzcpshgzzysxcdfgmwqrllqxrfztlystctmjcsjjthjnxtnrztzfqrhqgllgcxszzjdjlxcytsjtlnyxhszxcgjzyqpylfhdjsbpcczgjjjqzjqdybssllcmyctmqtbhjqnnygjynqyqmzgcjkpdcgmyzhqllsllclmholzgdylfzsljcqzlylzcjeshnyllqxgjxlyjyyyxnbcljsswcqqcjyllcldqyllzllbnylgqchxyyqoxccqkyjxxhyklksxeqqxcqkkkkcsgyxxyqxygwtjohthxpxxxxslcyeychzzcbwqbbwjqzscszsslzylgdesjzmmymcytsdsxxscjpqqsqylyfzychdjdzywcbtjsycjkcyddjlbdjjsodzyqyskkxxdhhgqjyohdyxwgmmmajdybbbppbcmhcbljzsmtxerxjmhqdstpjdcbssmsssthjtslmmtrcplzszmlqdsdmjmqpnqdxcfynnfsdqqyxhyaykqyddlqyyysszbydslntfgtzqbzmchdhczcwftxtmqqsphqwwxsrgjcwtjtzzqmgwjjrjhttjbbgwzfxjhnqfxxqywyyhyscdydhhqmnmtmmchbszppzzgpmzfollcfwhmmsjzttthlmyffytzzgzyskjjxqyjzqbhmbzclyghgfmshpcfzsnclpbqsnjyzslxjfpmtyjygbxlldlxpzjypjyhhzcywhjylsjexfsszywxkzjlladyslymqjpwxxhxsktqjezrpxxzghmhwqpwqlyjjqjjzszcfkjlchhnxjlqwzjhbmzyxbdhhypylhlhlgfwlcfyytlhjjcjmscpxstkpnhjxsntyxxtestjctlsslstdlllwwyhdhrjzsfgxssyczykwhtdhwjslhtzdqdjzxxqggyltzphcsqfzlnjtclzpfstpdynylgmjllycqhynsbchylhqyqtmzybbywrfqykjsyslzdyjmpxyyssrhzjnyqtqdfzbwwtwwrxcwhgyhxmkmyyyhmsmzhngcepmlqqmtcwctmhpxjpjjhfxyyzsjzhtybmstsyjdtqqqytlhynbyqzlcxcnzwsmylkfjxlwgbypjytysylymzcktdwlgsmzsylmpwlzwxwqzssazsyxyrhssntsrapccpwcmgdhhqzdzxfjhgzttsbjhgyzlzysmyclllybtyxhbbzjkssdmalhhycfygmqypjycqxjllljgclzgqlycjcctotyxmtmshllwcgfxymzmklbszzcxhhjyslctyjcyhxsgyxckxlzwpyjpdhjwpjpwsqqxlxxdhmrslzcyzwttcxkystzshbsccstplwsscjchjlcgcjssphylhfhhxjsxallnylmzdhzxylsxlwzykcldyahzcmgdyspjtqjzlngjfsjshctsdszlblmssmnyymjqbjhrcwtyydchqljapzwbgqybkfcmjwlzllyylszydwhxpsbcmljpscgbhxlqhyrljxyswxhxzlldfhlslymjljyflyjycdrjlfsyzfsllcqyqfgjyhyszlylmstdjcyhbzllnwlxxygyyhhmgdhxxhhlzzjzxczzzcyqzfnjwpylcpkpyypmclqkdgxzggwqbdxzzkzfbxxlzxjtpjpttbytszzdwslchzhsltjxhqlhyxxxywzyswtmzkhlxzxzpyhgchkjfsyh0tjrlxfjxptztwhplyxfcrhxshxkjxxyhzqdxjwylhyhmjdbflkhtxcwhcfwjzfpqrxqxzyyyjygrpxgscsxngqchkzdxhflxxhjjbyzwtsxnncyjjymswyjqrmhxzwfqsylzjzgbhynshbgttcsebhxxwxyhhxyxxsqyxmlywrgyqlxbbcljsylpsytjzyhyzawlhorjmksczjxxxyxchcytryxqjddsjfslyltsffyxlmtyjmzjyyyxltzcsxqzlhzxlwyxzhdnlxxhxjcdyhlbrlmbrllaxksllljlyxxlycrylcjcgqcmtlzllcyzzpzpcyawhjjfybdyyzsepckzdqyqpbpcjpdcyzbdbbcyydycnnpjmtmlrmfmmgwygbsjgyksmdqqqztxmkqwgxllpjgzbqcdjjjfpkjkcxbljmswmdtqjxldlppbxcwkcqqqfqjczhgzgmykphyyhzykndkzmbpjyspxthlfpnyygxjdbkxnhhjhzjxstrstldxskzysybmxjlxyslbzyslhxjpfxbqnbylljqkygzmcyzzymccsl0lhzgwfwyxzmwcxtynxjhbyymcysbmhysmhdyshqyzchmjjmzcaahsfjbbhplxtylsxsdjgjdhkxxtxxnbhnmlngsltxmrhnlxqjxmzslyswqgdlbjhdcgjyqycmhwfmjybbbyjmjwjmdpwhxqldyapdfxxbcgjspckrssyzjmslbzzjfljjjlgxzgyxyxlszqyxbexyxhgcxbpldyhwecdwwcjmbtxchxyqxllxflyxlljlssfwdpzcmyjclmswtszbchqekcqbwlcgydblqppqzqfjqdjhymmcxtxdrmjwrhxcjzclqxdyynhyyhrslsrsywwzjymtltllgtqcjzyabtckzcjyccqljzqxalmzyyyzlwdxzxqdllqshgpjfjljhjabcqzdjgthhsstcyjlbswzlxjxrwgldlzrlzqtgsllllzlymxqgdzhgbdbhzpbrlw0x0bpfdwo000hlypcbjcc0dwbzpbzz0cyqxldomzblzwpdwyygdstthcsqsccrsssyslfybbntyjsydfndpthtzzmbbmxlcmyffgtjjqwftmdpjwdnlbzxmmczgbdzlqlfyfhssmjylsdchdzjwjcctljcldtljjcpddpjdsszynndbjlggjzxsxnlycybjjqycbylzcfzppgkcxzdzfztjjfgsjxzbnzyjqttyjwhtyzzhymdjxttmpxsplzcdwslshxybzgtfmmcjtacbbmgdkwycyzcdszzyhflyctygwhkjyylsjcxgywjcbhlcsnddbtzbsclyzczzssqdllmqyyhfllqllxfdyhabxggnywyypllsdldllbjcyxjzmlhljdxyyqytdlllbbgbfdfbbqjzzmdpjhgclgmjjpgaehhbwcqxaxhhhzchxyphjaxhlphjpgpzjqcqzgjjzzgzdmqyybdzphyhybwhazyjhykfgdpfqsdlzmljxjpgalxzdaglmdgxmmzqyxxdxxpfdmmssympfmdmmkxksyzyshdzkjsysmmzzzmsydnzzczxbplgtmddnmxckjmztyymzmzzmsqhhdccjemxxkljstgwlsqlyjzllsjshdbbmhnlyjczyhmxxhhzcjmdhxtkgrmxfwmcgmwkdcksxqmmmfzzydkmsclcmpcgmwrpxqpzdsslcxkyxtwlgjyahzjgzqwcsnxyhmmpmlkjxmhlmlgmxctkzmjjyszjsyszhsyjzjcdajzybsdqjzgwzkgxfkdmsdjlfmexkzqkjpeypzyszcdwyjffmzjykttdzzefmzlbnpplplpbpszalltylkckqzkgenqlwalkxydpxlhsxqqwq0kxqclhyxxmlyccwlymqysky0hlcjnszkpyzkcqzqljbdmdjhlasqlbydwqlwdnbqcryddztjybkbwszdxdtnpjdtctqdfxqqmgnseclstbhpkslctxxlpaydzklzygzcqapllkccylbqmqczqcljslqzdjxlddhpjqdljjxzqdjyzhkzljcyqdyjppypeakjyrmpcbymcxkllzllfqpylllmbsgjcysslrsysqtmxyxzqzbdzrysyztffmzzsmzqhzssccmlyxwtpzgxzjgzgsjsgkddhtqggzllbjdzlcbchyxyzhzfyxxstymsdbzzyjgtsmtfxqyxjssdgslnmdlrytzlryylxqhtxsrtzcgyxbnqqzfhykmzjbzymkbpnlyzpblmcnqyzzdsjzhjctshhyzzjrdyzhnfxglfxslkgjtctssyllgzrzbbjzzklpkbczyslxyxbjfpnjzzxcdwxzyjxzzdjjgggrsrjkmcmzjlsjywqs0yhqjsxpjztzlsnshrnypjtwchklbsrzlcxwjqxqkysjycztlqzybbybwzjqdwwyzcytjcjxckcwdkkzhsgkdzywwyyjqyytcytdjlxwkcckklcclzcqqdzlqlcsfqchqhsfsmqzzllbjjzbsjhtsjdysjqjpdlzcdcwjkjzzlpycgmzwdjjbsjqzsyzyhhxcpbjydssddzncglqmbtsfcbfdzdlznfgfjgfsmptjqlmblgqcyyxbqkdjjqsrfkztjdhczklbsdzcfytplljgjhtxzcsszzxstcygkgckgyoqxjplzpbbgtgyjzgczqszlbjlsjfzgkqqjcgwczpzqtldxrjxbsxxpzxhszyclwdsjjhxmfczpfzhqhqmqgkylyhtycgfrzgnqxcgpdlbzcsczqlljblhbzcypczppdymtzsgyhckcpzjgslclnscdsldzxbmsdlddfjmkdjdhslzxlszqpqpgjllybdszgqlbzlslkyyhzttncjyqtzzfszqztlljtyyllqllqyzqlbdzlslyyzymdfszsnhlxznczqzbbwskrfbcyzmthblgjpycnzcstlxshtzcyzlzblfeqhlxflcjlyljqcbzlzjghsstbrmhxzhjzclxfnbgxgtqjcztmsfzkjmssnxljkbhszxntnlzdntlmsjxgzjgjczxyhyhwrwwqnztnfjscpzshzjfyrdjsfscjzhjfzqzchzlxfxsbzqlzsgyftzdcszxzjbqmszkjrhxjzcgbjkhchgtxkjqglxbxfgtrtylxjxgdtsjxhjzjjcmzlcqsbtxhqgxtxxhxftsdkfjhzyjfjxrzldlljcqsqqzjwqxswqtwgwbzcgcllqzbclmqjtzgzxzxljfrmyzflxyszxxjkxrmjdcdmmyxbsqbhgzmwfwtgmxlzbgytgzyccdxyzxswg0yjyznbgpzjcqsyxcxrtfyzgrhztxszzthcbfclsyxzlzqmzlmplmxzjssflbysmyqsxjzxrxsqzzzssljflczjrcrxhhzxqwdshxsjjhqcxjbdynsysrjbqlpxzzpymlxzkyxlxcjlcycxxzzlldlllsjyhzxhyjwkjrwyhcpsgnrzlfzwfzznsxgxflzsxzzzbfcsyjdbrjkrdhhgxjljjtgxjxxstjtjxlyxqfcsgswmsbctlqzzwlzzkxjmltmjyhsddbxgzhdlbmyjfrzfcgclyjbpmlysmsxlszjqqhjzfxgfqfqbpxzgyyqxgztcqwyltlgwwwwhwlfsfgzjmgmgbgtjfsyzzgzyzaflsspmlbflcwbjzcljjmzlpjjlymqdmylyfbgygqzmlyzdxqyxrqqqhsxyyqqygjtyxfsfsllgnqcyhycwfhcccfxbylypllzqxxxxxkqhhxshjdcfdsczjxcpzwhhhhhapylhalpqafyhxdyllkmzqgggddesrendltzgchybpssqjjhclljtolnjpzljlhymheydydsqycddhgzpndzclzywllznteytgxlhslpjjbdgwxpcdntjcklkclwkllcasstknzdnqnttlyyzssysszzryljqkcgbhhcrxrzydgrgcwcgzqffbppjfzynakrgywyqpqxxfkjtszzxswzddfbbqtbgtzfznpzfpzxzpjszbmqhqcyxyldkljnypkyghgdcjxxeahpnzgztzcmxcxmmjxnkszqnmnlwbwwxjjrhclstmcsjtjcxxtpcnfdtnnpglllzcjlspblpgjcdtnjnlyarszffjfqwdpgzdwmrzcclodaxnssnyzrestyjwjyjdbcfxnmwttbqlwstszgybljpxglboclgpcbjftmxzljylzxcltpnclckxtfzjshcrxsfyszdkntlbyjcyjllstgqcbxnwzxbxklylhzlqzlnzcqwgzlgzjncjgcmnzzgjdzxtzjxycyycxxjyyxjjxsssjstssttppghtcsxwzdcsyfptfbchfbblzjclzzdbxgcxlqpxkfzflsyltywbmnjhskbmddbcysccldxycddqlyjjhmqllcsgljjsyfpyycayldjantqjpwycmmgqyysxdhqmzhszxbftwwzqswqrfkjlxjqqyfbrxjhlfwjgzyqacmyfrhccybyqwlpexcczsdyrlttdmqlykmbbgmyyjprkznpbsxyxbhyzdjdnghpmfsgbwfzmfqmmbzmzzcjjlcnyxyqgmlrygqccyhzlwjgcjchgmcjjfyzzjhycfrrcmtzqzxhfqgdjxccjeaqcrjyhpljlszdjrbcqhjdzrhxlyqjsymhzydwldfryhbbydtssccwbxglpzmlzztqsscpjmmxjcsjytycghycjwsnsxlfemwjnmkllswtxhyyy0cmmcwjdqdjzglljwjnkhpzggflccsczmcbltbhbqjxqdjpdjqtghglfqawbzyzjltstdhqhctcbchflqmpwdshyytqwcnztjtlbypbpdyyyxsqkxwyyflxxncwcsybmaelykkjmzzzbrxyaqjfljpfhhhxtzzxsgqqmhspgdzqwbwpjhzjdyjcqwzkthxsqlzyymysdzgrxckkhjlwpysyscsyzlrmlqsyljxbcxtlhdqzpcycykpppnsxfyzjjrcemhszmsxlxglrwgcstlrsxbygbzgztcpldjlslylymdtmtzpalcxpqjcjwtcyyzlblxbzlqmyljbghdslssdmhmbdczsxwhamlczcpjmcnhjyjnsygchskqmzzqdllkablwjqsfmocdxjrrlyqzhjmybyqlrhetfjzfrfksryxfjdwdsxxsysqjyslyxwjhsnlxyyxhbhawhhjcxwmyljcsqlkydttxbzsxfdxgxsjhhsxxybssxdpyncmrptjzczenygcxqfjxkjbdmljcmqqxloxslyxxlylljdzbtymhbfsttqqwlhogyblszalzxqlhtwrrqhlstmypyxjjxmqsjpnbryxyjllyqylthylqyfmlgljdmllhfzwkzhljmlhljklj0tlqxylmbhhlnlsxqchxcfxxlhyhjjgbyzzkbxscqdjqdsxjzsyhzhhmgsxcsymxfebcqwwrbpyyjqtyqcyjhqqzyhmwffhgzfrjfcdbxndqyzpcykhjlfrzgppxzdbbgzqstlgdtylcqmgchhmfywlzyxkjlypjgsywmqqgqzmlzjnsqxjqxyjtcbehsxfssfxzwfllbcyyjdytdthwzzfjmqqyjlmqsxlldttkhhybfpwdyysqqrnqwlgwdebdwcyygcdlkjxtmxmyjsxhybrwfymwfrxyqmxysctzzdfykmldhqdlwyqnlcryjtlpsxcxywlsbrrjwxhqybhtydnhhgmmywytzcsqmdssccdalwdtcpqpycllqzyjswxwzzmmglmxclmxczmxmzsqtzppjqblpgxjzhfljjhycjsnxwcxsccdlxsyjdcqcxslqyclzxlzzxmxqrjmhrhzjphmfljlmlclqnldxzlllfypngjysxcqqdcmqjzzxhnpnxzmekmxhykyqlxsxtxjxyhwdcwdzhqyybgybcyscfgfsjnzdrzzjzxrzrqjjymcanhrjtldbpyzbstjhxxzypfdwfgzzrpymtngxzqbyxmbbfcckrpjjbjegrzgyclkhzdxkknsjkcljspgyyzlqqjybzssqlllkjbcbktylcccdblcppfylgydxzjyqggkqttfcxbdkdxxhybbfytyhbzlpdytgdhryrnjsbtcsnyjqhklllzslydxxwbcjqsbxbfjzjcjdzfbxxbrmlazgcsnclbjdstblfrz0swsbxbcllxxlzdjzsjpylyxyyftfffbhjjjgbygjpmmmpssczjmtlyzjxswxtyledqpjmygqzjgdjlqjwjqllsdgjgygmscljjxdtygjqjqjcjzcjgdzdshqgsjggcjhqxsnjjzzbxhsgzxcxyljxyxyydfqqjhjfxdhctxjdrxysqtjxyefyyssyxjxncyzxfxcsyszxyyschshxzzzgzzzgfjdldylnpzgyjyztyqzpbxqbdztzczyxxyhhscxshcggqhjhgxwsctmzmlhyxgebtylzkkwytjzrclekestdbcykqqsayxcjxwwgsbhjszsdhcsjkqcxswxfctynydpzcczjqtzwjqdzzzqzljcxlsbhbydxpsxshhezdxfptjqyzzxhyaxncfzyyhxgnxmywxtzsjbkhhgymxmxqcxtsbcqsjyxhtyylybcqlmmszmjzjllcogxzaajzyhjmchhcxzsxzdznleyjjzjbhzwzzsqtjpsxztdsxjjjznyazphhyysrrqdthzhayjyjhdzjzlswclybzyecwcycrylcxnhzydzydyjdfrjjhtrsqtxyxjrjhojynxelxsfsfjzghpzsxzszdzcqzbyyklsgsjhczshdgqgxyzgxchxzjwyqwgyhksseqzzndzfkwysstclzstsymcdhjxxyweyxczaydmpxmdsxybsqmjmzjmtzqlpjyqzcgqhxjhhhxxhlhdldjqcldwbsxfzzyyschtytyjbhecxhjkgjfxbhyzjfxhwhbdzfyzbcapnpgnydmsxhkhhmamlnbyjtmpxyjmcthjbzyfcgdyhwphftgzzezsbzegpbmdskftycmhbllhgpzjxzjgzjyjzsbbqsczzlzccstpgxmjsfdcczjzdjxcybzlfcjsazfgszlybcwzzbyzdzypswyjgxzbdsysxlgzbzfygczxbzhzftpbgzgejbstgkdmfhyzzjhzllzzgjqzlsfdjsscbzgpdlfzfzszyzyzsygcxsntxchczxtzzljfzgqsqyxzjqccccdqcdxzjyqjqcgxztdlgscxzsyjjqtcclqdqztqchqqjztezzzpbkkdjfcjfztybqyqttyjlmbdktjcpqzjdzfpjsbnjlgyjdxjdzqkzgqkxdlpzjtcjdqbxdjjjstcjnxbxcmslyjcqmtjjwwcjjnjnlllhjcwqtbzqqczczpzzdzyddcyzdzccjgtjfcdprntctjdcqtqndtjnplzbcllctdsxkjzqdpzlbznbtjdcxfczdbccjjltqqpldcgztbbzjcqdcjwynllzlzccdwllxwzlxrsntqjczxkjlsgdfqtddglrlajjtklymkqlldzytdyycygjwyxdxfrskstcdenqmrkqzhhqkdldazfkypbggpzrebzzykyqspegjjglkqzzzslysywyzwfqznlzhlzhwcgkypqgnpgblplrrjyxcccgyhsfzfwfzywtgzxyljczwhxzjzblfflgskhyjdeyjhlpllllcygxdrzelrhgklzzyhzlyqszzjzqljzflnbhgwlczcfjwspyxzlzlxgccbzbllcxbbbbxbbcbbcrnnzccyrbdsyldcgqyyqxygmqzwtzydyjhyfwdehzdjywlccctzyjjcdedpzdztsy0jhdymbjnyjzlxtsstphndjxxbyxqtzqddtjtdyztgwscszqflshlglbczbhdlyzjyckwtydylbnydsdsyccdyszyyebgexhqddwnygyclxtdcystqmygzasccszzddlcclzrqxyyeljsbymxshztembbllyyllytdqyshymrqxkfkbfxnxsbychxbwjyhtqbpbsbwdzylkgzskyghqzjxhxjxgnljkzlyycdxlfwfghljgjybxblybxqpqgztzplncybxdjyqydymrbesjyyhkxxstmxrczzywxyhybmcflyzhqyzmqxdbxbzwzmslpdmyckfmzklzcyqycclhxfclydqzpzygyjyzmdxdzfyfyttqtzhgspczmlccytzxjcytjmkslpzhysnwllytpzctzzcktxdhxxtqcypksmqccyyazhtjpcylzlyjbjxtpnyljyynrxcylmmnxjsmybcsysslzylljjgyldzdpqhfzzblfndsqkczfhhhgqmrdsxycstxnqqrpyjbfcxdyqfbnxejdgyqbsrcnfyyqpghyjdyzxgrhtkyleqdzntsmgklbsgbpyszbydjzsstjzstxzbhbscsbzczptqfzmqflypybbjgszmxxdjmtsyskkbjtxhjcegbsmhyjzcxtmljyxrzzqscxxqptzhmkdxxxjcljprmyygadyskqlsadhrskqxzxztcxhztlmlwxybwsyctbhjhjfcwzsxhwtkzlxqshlyczjxemplprcgltbzztlzjcyjgdtslklpllqpjmzpapxyzlaktkdnczzbncctdqqzjyjgmctxldgcszlmlhbglkfbnwzhdxphlfmkyclgxdtwzfrjejctzhydxykshwfzcqshknmqqhtchymjdjskhxzjzbzzxympajqmcdbxlsklyynwrtsqgscbpdbsgzwyhtlkssswgzzlyytnxjgmjszsxfwnlsoztxgxlsammlbwldscylakqcqstmycfjbslxclzjclxxksbzqzlhjphqplsxscgslnhpsfqqxtxjjzlqldxzjjzdyydjnzptfcdskjfsljhylzqjzlbthydgdjfdbyazxdzhzjnhhqbygnxjjqczmlljzkspldsclbblxklelxjlbjycxjxgcnlcqplzlznjtzljgyzdzpltqcssfdmnycxgbtjdcznbgbqyqjwgkfhdnbyqzqgbkpbbyzmtjdytblsqmbsxtbnpdxklemyycjynzdtldykzzxtdxhqshdgmzsjycctayrzlpwltlkxslzcggexclfxlkjrtlqjaqzncmbqdkkcxglczjzxjhptdjjmzqykqsecqzdshhadmlzfmmzbgntjnnlgbyjbrbtmlbyjdzxlxjlpldlpcqdhlhzlycblcxccjadjlmcmmsshmybhbskkbhrsxxjmxsdznzpxlbbrhgghfchgmsklltsjyycqlcskywyehywhbhqywbawykqldq0tntkhqcgdqktgpkxhcpdhtwtmssyhbwcrwxhjmkmzngwtmlkfghkjyldyycxwhyeclqhkqhttqkhffldxqwytyydesbpkyrzpjfyyzjceqdzzdlattbbfjllcxdlmjsdxegygsjqxcwbxsszpdyzcxdnyxpfzqdlyjccpltxlsxyzyrxcyyydylwwndsahjsyqyhgywwaxtjzdaxysrltdpssaxfnejdxyzhlxlllzhzsjnyqyqjxyjghzgjcyjchzlycdshhsgczyjgcllnyzcjyyxnfsmwfpylcyllabwddhwdxjmcxztzpmlqzhsfhzynstlldywlslxhymmylmbwwkyxyadtxylldjpybpwfxjmmmllhafdllaflbhhhbqqjtzjcqjjdjtffkmmmpymhygdcjrddwrqjxnbysnmzdbxytbjhpybygtjxaahgqdqtmbstqxkbtsbkjlxrbeqqhqmjjbdjwtgtbxpgbktlgqxjjjcdhxqdwjlwrfmqgwqhckryswgbtgygbwsdwdwrfhwytjjxxxjyzyslphyypayxhydqqxshxyxeskqhywbdddpplcjlhqeewjksyykdyplfjthkjltcyjhhjttbltzzcdlthqkcjqysteeywkyzyxxyysddjkllpwmcyhqgxyhcrmbxpllnqydqhxsxxwgdqbshyllpjjjthyjkyphthyyktyezyenmdshlcrpqfbgfxzbsbtlgxxjbswyysksflxlpplbbblbsfxfyzbsjssylpbbffffsscjdstzsxtryycyffsyzyzbjtbctsbsdhrtjhbytcxyjeylxcbnebjdsysyhgsjcbxbydfzwgenyhhthjhaxfwgcstbgxklstywmtmbyxjskzsxdyjrcytwxzfhmymcxlznsdjtxtxrycfyjsbsdyerxhgjxbbdeynjghxgckgscymblxjmsznskgxfbnbbthfjaafxyxfpxmyfhdttcxzzpxrsywzdlybbjtyqwqjpzypzjznjpzjlztfysbttslmptzrtdxqsjehbzylzdhljsqmlhtxtjecxslzzspktlzkqqyfsygywpcpqfhqhytqxzkrsgtgsqczlptxcdyyzssqzslxlzmacpcqbzyxhbsxlzdltcdjtylzjyytpzylltxjsjxhlbmytxcqrblzssfjzztnjytxmyjhlhpblcyxqjqqkzzscpzkswalqsplcczjsxgwwwygyatjbbctdkhqhkgtgpbkqyslbxbbckbmllxdzstbklggqkqlsbkkdfxrmdkbftpzfrtbbmfeeqgxkjpzsstlbztpszqzsjdhljqlzbpmsmmsxlqqnhknblrddnhxdkddjcyygyfzgzlgsygmjqgkhbpmxyxlytqwlwgcpbmjxcyzydrjbhtdjyejshtmjsbyplwhlzffnypmhxqhpltbqpfbcwjdbygpnxtbfzjgsdctjshxeawzzylltyybwjkgxghlfkxtjtmszsqynzggswqsphtlsskmclzxyszqqxncjdqgzdlfnykljcjllzlmzznhydsshthxzlzjbbhqzwwycrdhlyqqjbeyfsjxthsrxwjhwpslmssgzttyeyqqwrslalhmjtqjsmxqpjjzjxzyzkxbyqxbjxshzssfglxyxzxfghkzszggylclsarjxhslllmzxelglxydjytlfbhbpnlyzfbbhptgjkwetzhkjjxzxxglljlstgshjjyqlqzfkcgnndjsszfdbctwwseqfhqjbsaqtgypjlbxbmmywxgslzhglzgnyfljbyfdjfrgsfmbyzhqfbwjsyfyjjphzbyyzffwodjrlmftmlbzgycqxcdjygzyyyydytydwegazyhxjlzyyhlrmgrjxzclhneljjthtbwjybjjbxjjtjteekhwslzplpsfazpqqbdlqjjtyyqlyzkdksqjyyjzldqcgjqyzjsycmraqthtejmfctyhypkmhycwjdcfhyyxwshctxrljgjshccyyyjltkttytmxgtcjtzayyoczlylbszywjytsjyhbyshfjlygjxxtmzyyltxxypzlxyjzyzyypnhmymdyylblhlsyygqllnjjymsoycbzgdlyxylcqyxtszegxhzglhwbljheyxtwqmakbpqcgyshhegqcmwyywljyjhyyzlljjylhzyhmgsljljxcjjyclycjpcpzjzjmmylcjlnqljjjlxxjmlszljqlycmmhcfmmfpqqmfxlqmcffqmmmmhmznfhhjgtthhkhslnchhyqdxtmmqdcydyxyqmyqylddcyyydazdcymdydlzfffmmycqcwzzmabtbyctdmndzggdftypcgcyttssffwbdtzqssystwjjhjytsxxylbyqhwwhxezxwznnqzjzjjqjccchyyxbzxzcyjtllcqxynjycyycynzzqyyyewyczdcjycchyjlbtzyycqwlpgpyllgkdldlgkgqbgychjx0csh0zg00jyzsk00s0g0jzl0000000sl0000000l000000000000000000000000000000000000000000000000000';
+function pyInitials(s){
+  if(!s) return '';
+  var out='';
+  for(var i=0;i<s.length;i++){
+    var c=s.charCodeAt(i);
+    if(c>=0x4E00&&c<=0x9FFF&&(c-0x4E00)<PY_INITIALS.length){
+      var p=PY_INITIALS.charAt(c-0x4E00);
+      if(p>='a'&&p<='z') out+=p;
+    }else if(c>=65&&c<=90){ out+=String.fromCharCode(c+32); }
+    else if(c>=97&&c<=122){ out+=s.charAt(i); }
+    else if(c>=48&&c<=57){ out+=s.charAt(i); }
+  }
+  return out;
+}
+/* 模糊匹配：每个空格分词都要命中任一字段的原文（大小写不敏感）或拼音首字母 */
+function matchQuery(texts,q){
+  q=String(q||'').trim().toLowerCase();
+  if(!q) return true;
+  var toks=q.split(/\s+/);
+  var hay=[],py=[];
+  for(var i=0;i<texts.length;i++){
+    var t=String(texts[i]==null?'':texts[i]).toLowerCase();
+    hay.push(t); py.push(pyInitials(t));
+  }
+  for(var t=0;t<toks.length;t++){
+    var tok=toks[t],hit=false;
+    for(var i=0;i<hay.length;i++){
+      if(hay[i].indexOf(tok)>=0||py[i].indexOf(tok)>=0){ hit=true; break; }
+    }
+    if(!hit) return false;
+  }
+  return true;
+}
+
+/* ---------- localStorage（收藏 / 最近，两页共享键名） ---------- */
+var storagePrefix=new URLSearchParams(location.search).get('demo')==='1'?'suhub.demo.':'suhub.';
+var LS_FAVS=storagePrefix+'favs',LS_RECENT=storagePrefix+'recent';
+function lsGet(key,fb){
+  try{ var v=localStorage.getItem(key); return v==null?fb:JSON.parse(v); }catch(e){ return fb; }
+}
+function lsSet(key,v){
+  try{ localStorage.setItem(key,JSON.stringify(v)); }catch(e){}
+}
+function getFavs(){ var a=lsGet(LS_FAVS,[]); return Array.isArray(a)?a:[]; }
+function setFavs(a){ lsSet(LS_FAVS,a); }
+function getRecent(){ var a=lsGet(LS_RECENT,[]); return Array.isArray(a)?a:[]; }
+function addRecent(id,at){
+  var a=getRecent().filter(function(x){ return x&&x.id!==id; });
+  a.unshift({id:id,t:typeof at==='number'?at:Date.now()});
+  if(a.length>10) a.length=10;
+  lsSet(LS_RECENT,a);
+}
+var commandOutcomes=SUHubCommandOutcomes.create({storage:{getItem:function(key){return localStorage.getItem(key);},setItem:function(key,value){localStorage.setItem(key,value);}},key:storagePrefix+'command-completions',recordRecent:addRecent,notify:toast});
+window.__onCommandResult=function(result){var value=parseJson(result);commandOutcomes.handle(value,{notify:true});if(diagnostics)diagnostics.record(value);renderListPane();};
+function fmtTime(t){
+  var d=Date.now()-t;
+  if(d<60000) return '刚刚';
+  if(d<3600000) return Math.floor(d/60000)+' 分钟前';
+  if(d<86400000) return Math.floor(d/3600000)+' 小时前';
+  var days=Math.floor(d/86400000);
+  if(days===1) return '昨天';
+  if(days<7) return days+' 天前';
+  try{ return new Date(t).toLocaleDateString('zh-CN'); }catch(e){ return ''; }
+}
+
+/* ---------- 轻提示 ---------- */
+var toastTimer=null;
+function toast(msg){
+  var el=$('#toast');
+  el.textContent=msg; el.hidden=false;
+  el.classList.remove('show'); void el.offsetWidth; el.classList.add('show');
+  if(toastTimer) clearTimeout(toastTimer);
+  toastTimer=setTimeout(function(){
+    el.classList.remove('show');
+    setTimeout(function(){ el.hidden=true; },220);
+  },2600);
+}
+
+/* ============ 演示数据（与 direction-final.html 一致的插件清单） ============ */
+var DEMO_STATE={
+  version:'0.9.2',
+  categories:{ model:'模型工具', material:'材质', component:'组件', draw:'绘图', arch:'建筑', clean:'清理', render:'渲染', import:'导入导出', script:'我的脚本' },
+  plugins:[
+    {id:'super-pushpull', name:'超级推拉', version:'1.4.2', author:'SU 中枢团队', license:'MIT', category:'model', description:'自由推拉面与体块', homepage:'', loaded:true},
+    {id:'fillet', name:'圆角工具', version:'1.1.0', author:'SU 中枢团队', license:'MIT', category:'model', description:'实体边倒圆角', homepage:'', loaded:true},
+    {id:'batch-group', name:'批量成组', version:'1.0.3', author:'SU 中枢团队', license:'MIT', category:'model', description:'按层批量创建群组', homepage:'', loaded:true},
+    {id:'stats-export', name:'统计导出', version:'0.9.0', author:'SU 中枢团队', license:'MIT', category:'model', description:'导出组件统计报表', homepage:'', loaded:false},
+    {id:'batch-rename', name:'批量重命名', version:'1.0.0', author:'SU 中枢团队', license:'MIT', category:'model', description:'按规则批量重命名', homepage:'', loaded:false},
+    {id:'material-swap', name:'材质替换', version:'1.2.1', author:'SU 中枢团队', license:'MIT', category:'material', description:'查找并替换材质', homepage:'', loaded:true},
+    {id:'spray-component', name:'组件喷笔', version:'0.8.2', author:'SU 中枢团队', license:'MIT', category:'component', description:'沿路径散布组件', homepage:'', loaded:false},
+    {id:'lines-to-cyl', name:'线转柱体', version:'1.3.0', author:'SU 中枢团队', license:'MIT', category:'draw', description:'线段批量生成圆柱', homepage:'', loaded:false},
+    {id:'section-tool', name:'剖面工具', version:'1.0.1', author:'SU 中枢团队', license:'MIT', category:'draw', description:'快速生成剖切面', homepage:'', loaded:false},
+    {id:'terrain', name:'地形沙盒', version:'0.7.4', author:'SU 中枢团队', license:'MIT', category:'draw', description:'地形建模与等高线', homepage:'', loaded:false},
+    {id:'door-window', name:'一键门窗', version:'2.0.0', author:'SU 中枢团队', license:'MIT', category:'arch', description:'参数化门窗布置', homepage:'', loaded:false},
+    {id:'curtain-wall', name:'幕墙生成', version:'1.5.0', author:'SU 中枢团队', license:'MIT', category:'arch', description:'自动生成玻璃幕墙', homepage:'', loaded:false},
+    {id:'cover-faces', name:'快速封面', version:'1.2.0', author:'SU 中枢团队', license:'MIT', category:'arch', description:'一键封闭开敞面', homepage:'', loaded:true},
+    {id:'cleanup-model', name:'清理模型', version:'2.1.0', author:'SU 中枢团队', license:'MIT', category:'clean', description:'清除未使用项与废线', homepage:'', loaded:true},
+    {id:'script-batch-import', name:'我的脚本·批量导入', version:'0.5.0', author:'SU 中枢团队', license:'MIT', category:'script', description:'批量导入本地模型', homepage:'', loaded:false},
+    {id:'script-layer-archive', name:'我的脚本·图层归档', version:'0.5.0', author:'SU 中枢团队', license:'MIT', category:'script', description:'按图层归档场景', homepage:'', loaded:false}
+  ],
+  commands:[
+    {id:'super-pushpull', title:'超级推拉', category:'model', keywords:['推拉','cjtl','push','pull'], shortcut:'Ctrl+⇧+P', fromPlugin:'super-pushpull'},
+    {id:'fillet', title:'圆角工具', category:'model', keywords:['圆角','倒角','yjgj','fillet'], shortcut:'Ctrl+⇧+F', fromPlugin:'fillet'},
+    {id:'batch-group', title:'批量成组', category:'model', keywords:['成组','群组','plcz','group'], shortcut:'Ctrl+⇧+G', fromPlugin:'batch-group'},
+    {id:'stats-export', title:'统计导出', category:'model', keywords:['统计','报表','tjdc','stats'], shortcut:'Ctrl+⇧+S', fromPlugin:'stats-export'},
+    {id:'batch-rename', title:'批量重命名', category:'model', keywords:['重命名','plcmm','rename'], shortcut:'Ctrl+⇧+R', fromPlugin:'batch-rename'},
+    {id:'material-swap', title:'材质替换', category:'material', keywords:['材质','替换','czth','material','qc'], shortcut:'Ctrl+⇧+M', fromPlugin:'material-swap'},
+    {id:'spray-component', title:'组件喷笔', category:'component', keywords:['喷笔','散布','zjpb','spray'], shortcut:'Ctrl+⇧+B', fromPlugin:'spray-component'},
+    {id:'lines-to-cyl', title:'线转柱体', category:'draw', keywords:['柱体','圆柱','xzzt','pipe'], shortcut:'Ctrl+⇧+T', fromPlugin:'lines-to-cyl'},
+    {id:'section-tool', title:'剖面工具', category:'draw', keywords:['剖面','剖切','pmgj','section'], shortcut:'Ctrl+⇧+X', fromPlugin:'section-tool'},
+    {id:'terrain', title:'地形沙盒', category:'draw', keywords:['地形','等高线','dxsh','terrain'], shortcut:'Ctrl+⇧+D', fromPlugin:'terrain'},
+    {id:'door-window', title:'一键门窗', category:'arch', keywords:['门窗','yjmc','door'], shortcut:'Ctrl+⇧+O', fromPlugin:'door-window'},
+    {id:'curtain-wall', title:'幕墙生成', category:'arch', keywords:['幕墙','玻璃','mqsc','curtain','qc'], shortcut:'Ctrl+⇧+W', fromPlugin:'curtain-wall'},
+    {id:'cover-faces', title:'快速封面', category:'arch', keywords:['封面','封闭','ksfm','face'], shortcut:'Ctrl+⇧+A', fromPlugin:'cover-faces'},
+    {id:'cleanup-model', title:'清理模型', category:'clean', keywords:['清理','清除','qlmx','clean','qc'], shortcut:'Ctrl+⇧+C', fromPlugin:'cleanup-model'},
+    {id:'script-batch-import', title:'我的脚本·批量导入', category:'script', keywords:['导入','pldr','import'], shortcut:'Ctrl+⇧+I', fromPlugin:'script-batch-import'},
+    {id:'script-layer-archive', title:'我的脚本·图层归档', category:'script', keywords:['图层','归档','tcgd','layer'], shortcut:'Ctrl+⇧+L', fromPlugin:'script-layer-archive'}
+  ]
+};
+var DEMO_MARKET={
+  count:5,
+  plugins:[
+    {id:'soap-skin-bubble', name:'起泡泡', version:'1.2.1', category:'曲面', description:'闭合边线生成张拉曲面，膜结构造型', license:'免费', author:'Josef Leibinger', homepage:'https://extensions.sketchup.com/extension/soap-skin-bubble', official:true, changelog:'修复曲面细分错误', installed:true, installedVersion:'1.0.0', updateAvailable:true},
+    {id:'add-faces', name:'Add Faces 补面', version:'2.0', category:'补面', description:'选中边线自动补面，DWG 导入后快速修补', license:'免费', author:'TIG', homepage:'https://sketchucation.com/pluginstore', official:true, changelog:'', installed:false, installedVersion:null, updateAvailable:false},
+    {id:'d5-sync', name:'D5 同步', version:'1.8.3', category:'渲染', description:'一键同步模型到 D5 渲染器，实时联动', license:'免费', author:'D5 Render', homepage:'https://www.d5render.com/', official:true, changelog:'', installed:true, installedVersion:'1.7.2', updateAvailable:true},
+    {id:'1001bit', name:'1001bit 建筑工具', version:'3.0', category:'建筑', description:'一键生成楼梯、坡道、墙体、门窗、屋顶', license:'商业授权', author:'GOH C.', homepage:'https://www.1001bit.com/', official:true, changelog:'', installed:false, installedVersion:null, updateAvailable:false},
+    {id:'parametric-modeling', name:'参数化建模', version:'0.7', category:'参数化', description:'节点式参数化：楼梯、墙体、幕墙随参数更新', license:'MIT', author:'SU Hub', homepage:'https://github.com/example/parametric', official:false, changelog:'', installed:false, installedVersion:null, updateAvailable:false}
+  ],
+  errors:[],
+  sources:['https://raw.githubusercontent.com/example/su-hub-catalog/main/catalog.json']
+};
+function deep(o){ return JSON.parse(JSON.stringify(o)); }
+/* SketchUp HtmlDialog 回调返回值可能被二次 JSON 编码：返回 "{\"...\"}" 字符串，
+   JSON.parse 后仍是字符串而非对象。此函数做兼容解析。 */
+function parseJson(x){
+  if(typeof x==='object' && x!==null) return x;
+  if(typeof x!=='string') return x;
+  try{
+    var v=JSON.parse(x);
+    if(typeof v==='string') v=JSON.parse(v);
+    return v;
+  }catch(e){ return null; }
+}
+function sleep(ms){ return new Promise(function(res){ setTimeout(res,ms); }); }
+
+/* ============ JS→Ruby 桥接 ============ */
+var demoMode=new URLSearchParams(location.search).get('demo')==='1', connected=false;
+function hasBridge(){
+  return typeof window.sketchup==='object' && window.sketchup!==null
+    && typeof window.sketchup.get_state==='function';
+}
+/* 数据请求：SketchUp 回调返回值不可靠，改为 Ruby 端 execute_script
+   注入 window.__onXxx(data) 的模式（data 直接是对象，无需 JSON.parse）。 */
+var BRIDGE_MAP={get_state:'__onState',get_market:'__onMarket',get_settings:'__onSettings',save_settings:'__onSaveSettings',install_plugin:'__onInstall',update_plugin:'__onUpdate',add_source:'__onAddSource',run_command:'__onRun',execute_shortcut:'__onShortcut',open_url:'__onOpenUrl',open_panel:'__onOpenPanel',open_palette:'__onOpenPalette',close_dialog:'__onClose',get_host_update_config:'__onHostUpdateConfig',check_host_update:'__onHostUpdate'};
+var requestNo=0,pending={},requestQueues={};
+Object.keys(BRIDGE_MAP).forEach(function(name){
+  window[BRIDGE_MAP[name]]=function(raw,id){
+    var data=parseJson(raw),request=id?pending[id]:null;
+    if(request&&request.name===name){request.finish(null,data);return;}
+    if(name==='get_state'&&!id&&validState(data))acceptState(data);
+  };
+});
+function bridgeRequest(cbName,arg){
+  var next=(requestQueues[cbName]||Promise.resolve()).catch(function(){}).then(function(){return new Promise(function(resolve,reject){
+    if(!hasBridge())return reject(new Error('未连接 SketchUp，请从扩展菜单打开 SU 中枢'));
+    if(typeof window.sketchup[cbName]!=='function')return reject(new Error('当前宿主不支持 '+cbName+'，请安装完整版本'));
+    var id='su'+Date.now().toString(36)+'_'+(++requestNo),done=false;
+    // A native input/save dialog can stay open until the user responds.
+    var timeout=cbName==='check_host_update'?45000:cbName==='get_host_update_config'?15000:/market|install|update/.test(cbName)?120000:15000;
+    var timer=/^(run_command|execute_shortcut)$/.test(cbName)?null:setTimeout(function(){finish(new Error('请求超时，请重试：'+cbName));},timeout);
+    function finish(error,data){if(done)return;done=true;clearTimeout(timer);delete pending[id];if(error)reject(error);else if(data==null)reject(new Error('宿主返回无效数据'));else resolve(data);}
+    pending[id]={name:cbName,finish:finish};
+    try{
+      var result=arg===undefined?window.sketchup[cbName](id):window.sketchup[cbName](arg,id);
+      if(result&&typeof result.then==='function')result.then(function(value){if(value!==undefined)finish(null,parseJson(value));},finish);
+      else if(result&&(typeof result==='object'||typeof result==='string'))finish(null,parseJson(result));
+    }catch(error){finish(error);}
+  });});requestQueues[cbName]=next;return next;
+}
+async function action(name,arg){var result=await bridgeRequest(name,arg);if(!result||result.ok!==true)throw new Error(result&&result.message||'操作失败');return result;}
+async function commandAction(name,arg,commandId){
+  var result=commandOutcomes.handle(await bridgeRequest(name,arg),{commandId:commandId});
+  diagnostics.record(result);
+  if(result.status==='failed'||result.status==='unavailable')throw new Error(result.message||'操作失败');
+  if(result.message)toast(result.message);
+  return result;
+}
+function jsLog(msg){
+  try{
+    if(typeof window.sketchup==='object' && window.sketchup && typeof window.sketchup.js_log==='function'){
+      window.sketchup.js_log(msg);
+    }
+  }catch(e){}
+}
+window.onerror=function(m,s,l){ jsLog('JS错误: '+m+' @'+(l||'?')+':'+(s||'')); };
+
+/* ============ 状态 ============ */
+var state={plugins:[],commands:[],categories:{}},settings={shortcuts:[],sources:[]},market={plugins:[],errors:[],sources:[]},marketLoaded=false,marketLoading=false,marketPromise=null,connectionError='';
+var running={},favoritesSave=Promise.resolve(),settingsDraft=[],selectedRow=-1,lastPanelContext='';
+var settingsReturnFocus=null,settingsOpenToken=0;
+var diagnostics=SUHubDiagnostics.create({refresh:refreshState,readSettings:function(){return action('get_settings');},openSettings:openSettings,isDemo:function(){return demoMode;}});
+var hostUpdates=SUHubHostUpdates.create({request:bridgeRequest,openUrl:function(url){return action('open_url',url);},isDemo:function(){return demoMode;},currentVersion:function(){return state.version;},available:function(){return connected&&hasBridge()&&typeof window.sketchup.get_host_update_config==='function'&&typeof window.sketchup.check_host_update==='function';},beforeOpen:function(){settingsOpenToken++;if(!$('#settingsShade').hidden)closeSettings();if(diagnostics.isOpen())$('#diagnosticsClose').click();}});
+$('#pDiagnostics').addEventListener('click',function(){settingsOpenToken++;if(!$('#settingsShade').hidden)closeSettings();if(hostUpdates.isOpen())hostUpdates.close();$('#pDiagnostics').focus();},true);
+var curTab='all', mCat='', busy={};
+var PLUGIN_ICONS={
+  'super-pushpull':'i-push','fillet':'i-fillet','batch-group':'i-group','stats-export':'i-chart','batch-rename':'i-rename',
+  'material-swap':'i-drop','spray-component':'i-spray','lines-to-cyl':'i-cylinder','section-tool':'i-slice','terrain':'i-terrain',
+  'door-window':'i-door','curtain-wall':'i-curtain','cover-faces':'i-grid','cleanup-model':'i-trash',
+  'script-batch-import':'i-import','script-layer-archive':'i-layers'
+};
+var CAT_ICONS={ model:'i-cube', material:'i-drop', component:'i-group', draw:'i-cylinder', arch:'i-door', clean:'i-trash', render:'i-sparkle', import:'i-import', script:'i-layers' };
+var MARKET_ICONS={ 'soap-skin-bubble':'i-bubble', 'add-faces':'i-face', 'd5-sync':'i-link', '1001bit':'i-door', 'parametric-modeling':'i-sparkle' };
+
+function catLabel(key){ return (state&&state.categories&&state.categories[key])||key||''; }
+function iconForPlugin(p){
+  return PLUGIN_ICONS[p.id] || CAT_ICONS[p.category] || 'i-cube';
+}
+function iconForMarket(p){ return MARKET_ICONS[p.id] || 'i-cube'; }
+function findPlugin(id){
+  if(!state) return null;
+  for(var i=0;i<state.plugins.length;i++) if(state.plugins[i].id===id) return state.plugins[i];
+  return null;
+}
+function findCmdForPlugin(p){
+  if(!state) return null;
+  for(var i=0;i<state.commands.length;i++){
+    var c=state.commands[i];
+    if(c.fromPlugin===p.id||c.id===p.id) return c;
+  }
+  return null;
+}
+function findCmd(id){
+  if(!state) return null;
+  for(var i=0;i<state.commands.length;i++) if(state.commands[i].id===id) return state.commands[i];
+  return null;
+}
+function findMarket(id){
+  if(!market) return null;
+  for(var i=0;i<market.plugins.length;i++) if(market.plugins[i].id===id) return market.plugins[i];
+  return null;
+}
+
+/* ============ 启动 ============ */
+function seedDemoData(){
+  try{
+    if(!localStorage.getItem(LS_FAVS)){
+      setFavs(['super-pushpull','material-swap','section-tool','cover-faces','cleanup-model']);
+    }
+    if(!localStorage.getItem(LS_RECENT)){
+      var now=Date.now();
+      lsSet(LS_RECENT,[
+        {id:'batch-group', t:now-2*60000},
+        {id:'material-swap', t:now-5*60000},
+        {id:'cleanup-model', t:now-26*60000},
+        {id:'fillet', t:now-70*60000},
+        {id:'super-pushpull', t:now-26*3600000},
+        {id:'section-tool', t:now-3*86400000}
+      ]);
+    }
+  }catch(e){}
+}
+function validState(value){return !!(value&&Array.isArray(value.plugins)&&Array.isArray(value.commands));}
+function acceptState(value){
+  if(!validState(value))return;state=value;
+  diagnostics.setState(value);
+  commandOutcomes.reconcile(value.commandResults);
+  if(value.settings){settings=value.settings;if(Array.isArray(settings.favorites))setFavs(settings.favorites);}
+  $('#pVer').textContent='v'+(state.version||'—');
+  var context=value.panelContext;
+  if(context&&JSON.stringify(context)!==lastPanelContext&&['all','fav','recent','market'].indexOf(context.tab)>=0){
+    lastPanelContext=JSON.stringify(context);
+    curTab=context.tab;$('#pSearch').value=context.query||'';
+    document.querySelectorAll('#pTabs .tab').forEach(function(t){t.classList.toggle('active',t.getAttribute('data-tab')===curTab);});
+    $('#pList').hidden=curTab==='market';$('#pMarket').hidden=curTab!=='market';
+  }
+  renderListPane();if(curTab==='market')fetchMarket(false);
+}
+async function refreshState(){var value=await bridgeRequest('get_state');if(!validState(value))throw new Error(value&&value.message||'无法读取插件清单');acceptState(value);return value;}
+async function boot(){
+  connectionError='';$('#pConn').textContent='连接中…';
+  if(demoMode){state=deep(DEMO_STATE);seedDemoData();}
+  else{try{await refreshState();connected=true;}catch(error){connected=false;connectionError=error.message;state={plugins:[],commands:[],categories:{}};}}
+  jsLog('boot: 模式='+(demoMode?'演示':'已连接')+' 插件数='+(state.plugins?state.plugins.length:'?')+' 命令数='+(state.commands?state.commands.length:'?'));
+  /* 头部：版本 + 连接状态 + 演示标记 */
+  $('#pVer').textContent='v'+(state.version||'—');
+  $('#pConn').textContent=demoMode?'演示模式':connected?'已连接':'未连接';
+  $('#pStatus').classList.toggle('demo',demoMode);
+  $('#pStatus').classList.toggle('error',!demoMode&&!connected);
+  $('#pDemo').hidden=!demoMode;
+  $('#pSet').disabled=!demoMode&&!connected;$('#pPaletteBtn').disabled=!demoMode&&!connected;
+  renderListPane();
+  /* 市场数据预取：驱动底部「N 个插件可更新」计数 */
+  if(connected||demoMode)fetchMarket(false).catch(function(){});
+  if(connected)hostUpdates.autoCheck();
+}
+boot();
+
+/* ============ 插件列表（全部 / 收藏 / 最近） ============ */
+function groupPlugins(list){
+  var order=Object.keys(state.categories||{});
+  var groups={},extra=[];
+  list.forEach(function(p){
+    var c=p.category||'';
+    if(!groups[c]){ groups[c]=[]; if(order.indexOf(c)<0) extra.push(c); }
+    groups[c].push(p);
+  });
+  return order.filter(function(k){ return groups[k]; }).concat(extra)
+    .map(function(k){ return {key:k,label:catLabel(k),items:groups[k]}; });
+}
+function pluginRow(p,favs){
+  var fav=favs.indexOf(p.id)>=0;
+  var cmd=findCmdForPlugin(p);
+  var btn;
+  if(p.dependencyErrors&&p.dependencyErrors.length&&!p.loaded){
+    btn='<button class="r-btn" disabled title="'+esc(p.dependencyErrors.join('；'))+'">缺依赖</button>';cmd=null;
+  }else if(p.enabled===false){
+    btn='<button class="r-btn" disabled title="在设置中启用此插件">已禁用</button>';cmd=null;
+  }else if(cmd){
+    btn='<button class="r-btn'+(p.loaded?' loaded':'')+'" data-run="'+esc(cmd.id)+'">'+(p.loaded?'再运行':'运行')+'</button>';
+  }else{
+    btn='<button class="r-btn" disabled title="该插件未提供可运行命令">—</button>';
+  }
+  return '<div class="row'+(cmd?' clickable':'')+'" data-id="'+esc(p.id)+'"'+(cmd?' data-cmd="'+esc(cmd.id)+'"':'')+'>'
+    + ico(iconForPlugin(p))
+    + '<span class="r-name" title="'+esc(p.name)+'">'+esc(p.name)+'</span>'
+    + '<span class="r-desc" title="'+esc((p.dependencyErrors||[]).join('；')||p.description||'')+'">'+esc(p.restartRequired?'重启 SketchUp 后生效':(p.dependencyErrors||[]).join('；')||p.description||'')+'</span>'
+    + '<button class="r-star'+(fav?' on':'')+'" data-fav="'+esc(p.id)+'" title="'+(fav?'取消收藏':'收藏')+'" aria-label="'+(fav?'取消收藏':'收藏')+' '+esc(p.name)+'">'+ico('i-star','s')+'</button>'
+    + btn
+    + '</div>';
+}
+function recentRow(it){
+  var c=it.cmd;
+  return '<div class="row clickable" data-cmd="'+esc(c.id)+'">'
+    + ico(PLUGIN_ICONS[c.fromPlugin]||CAT_ICONS[c.category]||'i-cube')
+    + '<span class="r-name" title="'+esc(c.title)+'">'+esc(c.title)+'</span>'
+    + '<span class="r-tag">'+esc(catLabel(c.category))+'</span>'
+    + '<span class="r-time">'+esc(fmtTime(it.t))+'</span>'
+    + '</div>';
+}
+function renderListPane(){
+  var el=$('#pList');
+  if(connectionError){el.innerHTML='<div class="p-empty">'+esc(connectionError)+'<br><button class="r-btn" id="retryConnection">重试连接</button></div>';$('#pCount').textContent='';return;}
+  var q=$('#pSearch').value;
+  var html='',count=0;
+  if(state.errors&&state.errors.length)html+='<div class="m-errors" role="alert"><span class="t">'+state.errors.map(esc).join('；')+'</span></div>';
+  if(curTab==='recent'){
+    html+='<div class="p-flat"><div class="flat-head">最近使用</div>';
+    var items=getRecent().map(function(r){var c=findCmd(r.id);return c&&c.enabled!==false?{cmd:c,t:r.t}:null;}).filter(Boolean);
+    if(q.trim()) items=items.filter(function(it){
+      return matchQuery([it.cmd.title,it.cmd.category,catLabel(it.cmd.category),it.cmd.fromPlugin||''].concat(it.cmd.keywords||[]),q);
+    });
+    if(items.length){
+      items.forEach(function(it){ html+=recentRow(it); });
+    }else{
+      html+='<div class="p-empty">'+(getRecent().length?'未找到匹配的最近使用':'暂无最近运行记录，运行插件后会自动出现在这里')+'</div>';
+    }
+    html+='</div>';
+    count=items.length;
+    $('#pCount').textContent=count+' 个最近';
+  }else{
+    var favs=getFavs();
+    var list=state.plugins.slice();
+    if(curTab==='fav') list=list.filter(function(p){ return favs.indexOf(p.id)>=0; });
+    if(q.trim()) list=list.filter(function(p){
+      var fields=[p.name,p.description,p.id,p.category,catLabel(p.category)];
+      state.commands.filter(function(c){return c.fromPlugin===p.id;}).forEach(function(c){fields=fields.concat([c.title,c.id],c.keywords||[]);});
+      return matchQuery(fields,q);
+    });
+    if(list.length){
+      groupPlugins(list).forEach(function(g){
+        html+='<div class="grp"><div class="g-head"><span>'+esc(g.label)+'</span><span class="g-count">'+g.items.length+'</span></div>';
+        g.items.forEach(function(p){ html+=pluginRow(p,favs); });
+        html+='</div>';
+      });
+    }else{
+      html+='<div class="p-empty">'+(curTab==='fav'
+        ? (favs.length? '未找到匹配的收藏':'还没有收藏，点击插件行尾的星标即可收藏')
+        : '未找到匹配的插件')+'</div>';
+    }
+    count=list.length;
+    $('#pCount').textContent=count+(curTab==='fav'?' 个收藏':' 个插件');
+  }
+  el.innerHTML=html;
+  selectedRow=-1;
+  el.querySelectorAll('.row[data-cmd]').forEach(function(row){row.tabIndex=0;row.setAttribute('role','button');row.setAttribute('aria-label','运行 '+row.querySelector('.r-name').textContent);});
+}
+
+/* ============ 运行命令（记录最近） ============ */
+async function runCommand(id,row){
+  var cmd=findCmd(id);
+  if(!cmd||running[id])return;
+  jsLog('runCommand: 点击运行 '+cmd.id+' ('+cmd.title+')');
+  if(row&&row.classList){ row.classList.add('exec'); setTimeout(function(){ row.classList.remove('exec'); },420); }
+  if(demoMode){toast('演示模式不会运行「'+cmd.title+'」');return;}
+  running[id]=true;
+  try{
+    await commandAction('run_command',cmd.id,cmd.id);await refreshState();
+  }catch(e){
+    toast('运行失败：'+(e&&e.message||e));
+  }finally{delete running[id];}
+}
+
+/* ============ 插件市场 ============ */
+async function fetchMarket(force){
+  if(marketLoaded&&!force) return market;
+  if(marketLoading) return marketPromise;
+  marketLoading=true;
+  renderMarketPane();
+  marketPromise=(async function(){
+  try{
+    if(demoMode){ await sleep(260); market=deep(DEMO_MARKET); }
+    else{ market=await bridgeRequest('get_market'); }
+    if(!market||!Array.isArray(market.plugins))throw new Error('插件市场数据无效');
+    marketLoaded=true;
+  }catch(e){
+    market={count:0,plugins:[],errors:['无法获取插件市场：'+(e&&e.message||e)],sources:[]};
+    marketLoaded=true;
+  }
+  marketLoading=false;
+  renderMarketPane();
+  renderFooter();
+  return market;
+  })();return marketPromise;
+}
+function marketCard(p){
+  var b;
+  if(p.official&&p.homepage)b='<button class="m-btn" data-act="official" data-id="'+esc(p.id)+'">前往官网</button>';
+  else if(busy[p.id]) b='<button class="m-btn busy" disabled>处理中…</button>';
+  else if(p.updateAvailable) b='<button class="m-btn upd" data-act="update" data-id="'+esc(p.id)+'">更新</button>';
+  else if(p.installed) b='<button class="m-btn installed" disabled>'+(p.restartRequired?'重启生效':'已安装')+'</button>';
+  else b='<button class="m-btn" data-act="install" data-id="'+esc(p.id)+'">安装</button>';
+  var off=(p.official&&p.homepage)
+    ? '<span class="m-ver">官方渠道</span>'
+    : '';
+  var meta=[p.author,p.license].filter(Boolean).map(esc).join(' · ');
+  return '<div class="m-card" data-id="'+esc(p.id)+'">'
+    + '<span class="m-ico">'+ico(iconForMarket(p),'m-ico-svg')+'</span>'
+    + '<span class="m-main">'
+    +   '<span class="m-line1"><span class="m-name" title="'+esc(p.name)+'">'+esc(p.name)+'</span><span class="m-ver">'+esc(p.version)+'</span>'+off+'</span>'
+    +   (meta?'<span class="m-meta">'+meta+'</span>':'')
+    +   '<span class="m-desc" title="'+esc(p.description||'')+'">'+esc(p.description||'')+'</span>'
+    + '</span>'
+    + b
+    + '</div>';
+}
+function renderMarketPane(){
+  var errBox=$('#mErrors'), chips=$('#mChips'), cards=$('#mCards');
+  if(!marketLoaded&&marketLoading){
+    errBox.hidden=true;
+    chips.innerHTML='';
+    cards.innerHTML='<div class="m-note">正在加载插件市场…</div>';
+    return;
+  }
+  /* 顶部错误提示条 */
+  if(market.errors&&market.errors.length){
+    errBox.hidden=false;
+    errBox.innerHTML=ico('i-alert','m-err-ico')
+      + '<span class="t">'+market.errors.map(esc).join('；')+'</span>'
+      + '<button class="m-retry" type="button">重试</button>';
+  }else{
+    errBox.hidden=true;
+  }
+  /* 分类筛选 chips（由市场数据动态生成） */
+  var cats=[];
+  (market.plugins||[]).forEach(function(p){
+    var c=p.category||'其他';
+    if(cats.indexOf(c)<0) cats.push(c);
+  });
+  chips.innerHTML='<button class="m-chip'+(mCat===''?' active':'')+'" data-cat="">全部</button>'
+    + cats.map(function(c){
+        return '<button class="m-chip'+(mCat===c?' active':'')+'" data-cat="'+esc(c)+'">'+esc(catLabel(c))+'</button>';
+      }).join('');
+  /* 卡片 */
+  var q=$('#pSearch').value;
+  var list=(market.plugins||[]).filter(function(p){
+    if(mCat&&p.category!==mCat) return false;
+    if(q.trim())return matchQuery([p.name,p.description,p.author,p.license,catLabel(p.category)].concat(p.keywords||[]),q);
+    return true;
+  });
+  cards.innerHTML=list.length
+    ? list.map(marketCard).join('')
+    : '<div class="m-note">未找到匹配的插件</div>';
+  if(curTab==='market') $('#pCount').textContent=list.length+' 个插件';
+}
+async function doInstall(id,isUpd){
+  if(busy[id]) return;
+  if(demoMode){toast('演示模式不会安装或更新插件');return;}
+  busy[id]=true; renderMarketPane();
+  try{
+    var r;
+    if(demoMode){
+      await sleep(500);
+      var p=findMarket(id);
+      if(p){ p.installed=true; p.installedVersion=p.version; p.updateAvailable=false; }
+      r={ok:true,message:'演示模式：'+(isUpd?'已更新「':'已安装「')+(p?p.name:id)+'」'};
+    }else{
+      r=await action(isUpd?'update_plugin':'install_plugin',id);
+    }
+    toast(r.message||(r.ok?'操作完成':'操作失败'));
+    if(!demoMode){await refreshState();await fetchMarket(true);}
+  }catch(e){
+    toast('操作失败：'+(e&&e.message||e));
+  }
+  busy[id]=false;
+  renderMarketPane();
+}
+function renderFooter(){
+  var n=(market&&market.plugins)?market.plugins.filter(function(p){ return p.updateAvailable&&!p.official; }).length:0;
+  if(n>0){
+    $('#pUpd').hidden=false;
+    $('#pUpdTxt').textContent=n+' 个插件可更新';
+  }else{
+    $('#pUpd').hidden=true;
+  }
+}
+
+/* ============ 事件绑定 ============ */
+/* 标签页 */
+$('#pTabs').addEventListener('click',function(e){
+  var t=e.target.closest('.tab');
+  if(!t) return;
+  document.querySelectorAll('#pTabs .tab').forEach(function(x){ x.classList.remove('active'); });
+  t.classList.add('active');
+  curTab=t.getAttribute('data-tab');
+  $('#pList').hidden=curTab==='market';
+  $('#pMarket').hidden=curTab!=='market';
+  if(curTab==='market'){ if(!marketLoaded) fetchMarket(false); else renderMarketPane(); }
+  else renderListPane();
+});
+
+/* 搜索框：实时过滤 + Ctrl+F 聚焦 */
+$('#pSearch').addEventListener('input',function(){
+  if(curTab==='market') renderMarketPane();
+  else renderListPane();
+});
+document.addEventListener('keydown',function(e){
+  if(e.isComposing||e.keyCode===229||!$('#settingsShade').hidden||diagnostics.isOpen()||hostUpdates.isOpen())return;
+  if((e.ctrlKey||e.metaKey)&&(e.key==='f'||e.key==='F')){
+    e.preventDefault();
+    var s=$('#pSearch');
+    s.focus(); s.select();
+  }
+});
+
+/* 插件列表：收藏星标 / 运行按钮 / 最近行点击运行 */
+$('#pList').addEventListener('click',function(e){
+  if(e.target.closest('#retryConnection')){boot();return;}
+  var star=e.target.closest('.r-star');
+  if(star){
+    var id=star.getAttribute('data-fav');
+    var favs=getFavs(),i=favs.indexOf(id);
+    if(i>=0){ favs.splice(i,1); }else{ favs.push(id); }
+    setFavs(favs);
+    if(!demoMode){var snapshot=favs.slice();favoritesSave=favoritesSave.catch(function(){}).then(function(){return action('save_settings',JSON.stringify({favorites:snapshot}));}).catch(function(error){toast('收藏保存失败：'+error.message);});}
+    renderListPane();
+    return;
+  }
+  var btn=e.target.closest('button[data-run]');
+  if(btn){ runCommand(btn.getAttribute('data-run'),btn.closest('.row')); return; }
+  var row=e.target.closest('.row[data-cmd]');
+  if(row){ runCommand(row.getAttribute('data-cmd'),row); }
+});
+
+/* 市场：chips / 卡片按钮 / 错误重试 / 官方引导 */
+$('#mChips').addEventListener('click',function(e){
+  var ch=e.target.closest('.m-chip');
+  if(!ch) return;
+  document.querySelectorAll('#mChips .m-chip').forEach(function(x){ x.classList.remove('active'); });
+  ch.classList.add('active');
+  mCat=ch.getAttribute('data-cat');
+  renderMarketPane();
+});
+$('#mCards').addEventListener('click',async function(e){
+  var off=e.target.closest('[data-act="official"]');
+  if(off){
+    var p=findMarket(off.getAttribute('data-id'));
+    if(p&&p.homepage){
+      if(demoMode){ toast('演示模式：打开官方页面'); }
+      else{action('open_url',p.homepage).catch(function(error){toast('打开页面失败：'+error.message);});}
+    }
+    return;
+  }
+  var b=e.target.closest('button[data-act]');
+  if(!b) return;
+  var act=b.getAttribute('data-act');
+  if(act==='install') await doInstall(b.getAttribute('data-id'),false);
+  else if(act==='update') await doInstall(b.getAttribute('data-id'),true);
+});
+$('#mErrors').addEventListener('click',function(e){
+  if(e.target.closest('.m-retry')) fetchMarket(true);
+});
+
+/* 添加插件源 */
+$('#mAddSrcBtn').addEventListener('click',function(){
+  var form=$('#mSrcForm');
+  form.hidden=!form.hidden;
+  $('#mAddSrc').classList.toggle('open',!form.hidden);
+  if(!form.hidden) $('#mSrcInput').focus();
+});
+function resetSrcForm(){
+  $('#mSrcForm').hidden=true;
+  $('#mAddSrc').classList.remove('open');
+  $('#mSrcInput').value='';
+}
+$('#mSrcCancel').addEventListener('click',resetSrcForm);
+$('#mSrcOk').addEventListener('click',async function(){
+  var url=$('#mSrcInput').value.trim();
+  if(!validSource(url)){toast('请输入 http(s)、file:// 或本机绝对路径');return;}
+  if(demoMode){
+    toast('演示模式不会保存插件源');
+    return;
+  }
+  try{
+    var r=await action('add_source',url);resetSrcForm();
+    toast(r.message||(r.ok?'插件源已添加':'添加失败'));
+    if(r.ok){await refreshState();await fetchMarket(true);}
+  }catch(e){
+    toast('添加失败：'+(e&&e.message||e));
+  }
+});
+
+/* 底部栏：全部更新 / 设置 / 命令面板入口 / 收起 */
+$('#pUpdAll').addEventListener('click',async function(){
+  if(!market) return;
+  var ids=market.plugins.filter(function(p){ return p.updateAvailable&&!p.official; }).map(function(p){ return p.id; });
+  if(!ids.length) return;
+  if(demoMode){
+    toast('演示模式不会更新插件');
+    return;
+  }
+  var btn=$('#pUpdAll');
+  btn.disabled=true; btn.textContent='更新中…';
+  var ok=0,fail=0;
+  for(var i=0;i<ids.length;i++){
+    try{
+      var r=await action('update_plugin',ids[i]);
+      if(r.ok) ok++; else fail++;
+    }catch(e){ fail++; }
+  }
+  btn.disabled=false; btn.textContent='全部更新';
+  toast('更新完成：成功 '+ok+' 个'+(fail?'，失败 '+fail+' 个':''));
+  try{await refreshState();}catch(error){toast('状态刷新失败：'+error.message);}
+  await fetchMarket(true);
+});
+$('#pSet').addEventListener('click',openSettings);
+$('#pPaletteBtn').addEventListener('click',function(){
+  if(demoMode){ toast('演示模式：将打开命令面板'); return; }
+  action('open_palette').catch(function(e){ toast('打开命令面板失败：'+(e&&e.message||e)); });
+});
+$('#pCollapse').addEventListener('click',function(){
+  if(demoMode){ toast('演示模式：将收起面板'); return; }
+  action('close_dialog').catch(function(error){toast(error.message);});
+});
+function closeSettings(){settingsOpenToken++;$('#settingsShade').hidden=true;var target=settingsReturnFocus;settingsReturnFocus=null;(target&&target.isConnected?target:$('#pSet')).focus();}
+function drawShortcuts(){
+  $('#settingsShortcuts').innerHTML=settingsDraft.map(function(item,index){
+    var missing=!findCmd(item.target)?'<option value="'+esc(item.target)+'" selected disabled>命令已移除，请重新选择</option>':'';
+    var target=item.type==='command'?'<select class="shortcut-target" data-field="target" aria-label="命令">'+missing+state.commands.map(function(c){return '<option value="'+esc(c.id)+'"'+(c.id===item.target?' selected':'')+'>'+esc(c.title)+(c.enabled===false?'（已禁用）':'')+'</option>';}).join('')+'</select>':'<input class="shortcut-target" data-field="target" aria-label="网页地址" placeholder="https://…" value="'+esc(item.target)+'">';
+    return '<div class="shortcut-edit" data-index="'+index+'"><input data-field="title" aria-label="入口名称" maxlength="80" placeholder="入口名称" value="'+esc(item.title)+'"><select data-field="type" aria-label="入口类型"><option value="command"'+(item.type==='command'?' selected':'')+'>命令</option><option value="url"'+(item.type==='url'?' selected':'')+'>网页</option></select><button class="settings-secondary" data-remove="'+index+'" aria-label="删除快捷入口">×</button>'+target+'</div>';
+  }).join('');
+}
+async function openSettings(){
+  if(demoMode){toast('设置需要连接 SketchUp，演示模式不会保存');return;}if(hostUpdates.isOpen())hostUpdates.close();if(diagnostics.isOpen())$('#diagnosticsClose').click();settingsReturnFocus=document.activeElement;var openToken=++settingsOpenToken;$('#pSet').disabled=true;
+  try{
+    await favoritesSave;var response=await action('get_settings');settings=response.settings||{};settingsDraft=deep(settings.shortcuts||[]);
+    if(openToken!==settingsOpenToken)return;
+    $('#settingsSources').value=(settings.sources||[]).join('\n');
+    $('#settingsPlugins').innerHTML=state.plugins.map(function(plugin){return '<label class="plugin-toggle"><input type="checkbox" data-plugin="'+esc(plugin.id)+'"'+(plugin.enabled===false?'':' checked')+'>'+esc(plugin.name)+(plugin.restartRequired?'（重启后生效）':'')+'</label>';}).join('');
+    var readOnly=!!(response.storage&&response.storage.readOnly);
+    $('#settingsSave').disabled=readOnly;
+    $('#settingsError').hidden=!readOnly;
+    if(readOnly)$('#settingsError').textContent=(response.diagnostics||[]).map(function(item){return item.message;}).join('；')||'设置文件需要修复，已保留原文件，当前禁止覆盖保存。';
+    drawShortcuts();$('#settingsShade').hidden=false;$('#settingsClose').focus();
+  }catch(error){toast('读取设置失败：'+error.message);}finally{$('#pSet').disabled=false;}
+}
+$('#settingsClose').addEventListener('click',closeSettings);$('#settingsCancel').addEventListener('click',closeSettings);
+$('#settingsShade').addEventListener('click',function(event){if(event.target===this)closeSettings();});
+$('#shortcutAdd').addEventListener('click',function(){
+  if(settingsDraft.length>=100){toast('最多添加 100 个快捷入口');return;}var first=state.commands[0];
+  settingsDraft.push({id:'shortcut_'+Date.now()+'_'+settingsDraft.length,title:first?first.title:'新入口',type:first?'command':'url',target:first?first.id:''});drawShortcuts();
+  var rows=$('#settingsShortcuts').querySelectorAll('.shortcut-edit');rows[rows.length-1].querySelector('input').focus();
+});
+$('#settingsShortcuts').addEventListener('click',function(event){var button=event.target.closest('[data-remove]');if(button){settingsDraft.splice(Number(button.dataset.remove),1);drawShortcuts();}});
+$('#settingsShortcuts').addEventListener('input',function(event){var row=event.target.closest('[data-index]');if(row&&event.target.dataset.field)settingsDraft[Number(row.dataset.index)][event.target.dataset.field]=event.target.value;});
+$('#settingsShortcuts').addEventListener('change',function(event){
+  var row=event.target.closest('[data-index]');if(!row||!event.target.dataset.field)return;var item=settingsDraft[Number(row.dataset.index)];item[event.target.dataset.field]=event.target.value;
+  if(event.target.dataset.field==='type'){item.target=item.type==='command'&&state.commands[0]?state.commands[0].id:'';drawShortcuts();}
+});
+$('#settingsSave').addEventListener('click',async function(){
+  var button=this,errorBox=$('#settingsError');errorBox.hidden=true;
+  try{
+    var shortcuts=settingsDraft.map(function(item){return Object.assign({},item,{id:item.id,title:String(item.title||'').trim(),type:item.type,target:String(item.target||'').trim()});});
+    shortcuts.forEach(function(item){if(!item.title)throw new Error('请填写每个快捷入口的名称');if(item.type==='command'&&!findCmd(item.target))throw new Error('请选择有效命令：'+item.title);if(item.type==='url'&&!/^https?:\/\/.+/i.test(item.target))throw new Error('网页入口需填写 http(s) 地址：'+item.title);});
+    var sources=$('#settingsSources').value.split(/\r?\n/).map(function(url){return url.trim();}).filter(Boolean);if(sources.some(function(url){return !validSource(url);}))throw new Error('插件源需填写 http(s)、file:// 或本机绝对路径，每行一个');
+    var enabled={};$('#settingsPlugins').querySelectorAll('input[data-plugin]').forEach(function(input){enabled[input.dataset.plugin]=input.checked;});
+    button.disabled=true;button.textContent='保存中…';var response=await action('save_settings',JSON.stringify({sources:sources,shortcuts:shortcuts,enabled:enabled}));settings=response.settings||settings;
+    await refreshState();marketLoaded=false;await fetchMarket(true);closeSettings();toast(response.message||'设置已保存');
+  }catch(error){errorBox.textContent=error.message;errorBox.hidden=false;}finally{button.disabled=false;button.textContent='保存设置';}
+});
+document.addEventListener('keydown',function(event){
+  if(event.isComposing||event.keyCode===229||event.defaultPrevented||diagnostics.isOpen()||hostUpdates.isOpen())return;
+  if(!$('#settingsShade').hidden){
+    if(event.key==='Escape'){event.preventDefault();closeSettings();}
+    if(event.key==='Tab'){var focusable=Array.from($('#settingsShade').querySelectorAll('button:not(:disabled),input,select,textarea')).filter(function(el){return el.offsetParent!==null;});var first=focusable[0],last=focusable[focusable.length-1];if(event.shiftKey&&document.activeElement===first){event.preventDefault();last.focus();}else if(!event.shiftKey&&document.activeElement===last){event.preventDefault();first.focus();}}
+    return;
+  }
+  if(event.key==='Escape'&&$('#pSearch').value){$('#pSearch').value='';if(curTab==='market')renderMarketPane();else renderListPane();return;}
+  if(curTab==='market'||event.target.closest('textarea,select')||event.target.closest('input:not(#pSearch)'))return;
+  var rows=Array.from($('#pList').querySelectorAll('.row[data-cmd]'));
+  if(event.key==='ArrowDown'||event.key==='ArrowUp'){if(!rows.length)return;event.preventDefault();selectedRow=Math.max(0,Math.min(rows.length-1,selectedRow+(event.key==='ArrowDown'?1:-1)));rows.forEach(function(row,index){row.classList.toggle('keyboard',index===selectedRow);});rows[selectedRow].scrollIntoView({block:'nearest'});}
+  else if(event.key==='Enter'&&!event.target.closest('button')){var row=event.target.closest('.row[data-cmd]')||rows[Math.max(0,selectedRow)];if(row){event.preventDefault();runCommand(row.dataset.cmd,row);}}
+});
+window.addEventListener('storage',function(event){if(event.key===LS_FAVS||event.key===LS_RECENT)renderListPane();});
+})();
+</script>
+</body>
+</html>

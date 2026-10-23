@@ -1,0 +1,26 @@
+{
+  "id": "su-paint",
+  "name": "中枢喷漆",
+  "version": "0.2.1",
+  "min_su": "2024",
+  "author": "SU 中枢团队",
+  "license": "MIT",
+  "category": "material",
+  "description": "穿透组/组件层级单击刷正反面材质，共享实例自动独立，每次点击均可撤销。",
+  "keywords": [
+    "喷漆",
+    "penqi",
+    "paint",
+    "材质",
+    "caizhi",
+    "material",
+    "喷",
+    "pen"
+  ],
+  "entry": "su-paint.rb",
+  "command": {
+    "title": "中枢喷漆",
+    "id": "paint_through"
+  },
+  "shortcut": "Alt+P"
+}

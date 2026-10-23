@@ -1,0 +1,16 @@
+name: 功能需求
+description: 描述你希望完成的建模或插件管理工作
+title: "[需求] "
+body:
+  - type: textarea
+    id: workflow
+    attributes:
+      label: 你要完成什么工作
+      description: "请给一个具体输入和期望输出，说明当前流程在哪里受阻。"
+    validations:
+      required: true
+  - type: textarea
+    id: acceptance
+    attributes:
+      label: 怎样判断功能可用
+      description: "可以写尺寸、操作步骤、撤销要求或耗时目标。"

@@ -1,0 +1,24 @@
+{
+  "id": "su-pushpull",
+  "name": "中枢推拉",
+  "version": "0.2.1",
+  "min_su": "2024",
+  "author": "SU 中枢团队",
+  "license": "MIT",
+  "category": "model",
+  "description": "将选中面按明确毫米距离沿各自法线推拉，共面相邻面自动合并，异常整次回滚。",
+  "keywords": [
+    "推拉",
+    "tuila",
+    "pushpull",
+    "挤出",
+    "jichu",
+    "jpp"
+  ],
+  "entry": "su-pushpull.rb",
+  "command": {
+    "title": "中枢推拉",
+    "id": "multi_push_pull"
+  },
+  "shortcut": "Alt+J"
+}

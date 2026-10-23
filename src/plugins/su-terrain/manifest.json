@@ -1,0 +1,26 @@
+{
+  "id": "su-terrain",
+  "name": "中枢地形",
+  "version": "0.2.1",
+  "min_su": "2024",
+  "author": "SU 中枢团队",
+  "license": "MIT",
+  "category": "model",
+  "description": "按不同高度的水平等高线逐层生成地形曲面，支持全闭合或全开放轮廓，结果编组并统一朝上。",
+  "keywords": [
+    "地形",
+    "dixing",
+    "terrain",
+    "等高线",
+    "denggaoxian",
+    "contour",
+    "沙盒",
+    "shahe"
+  ],
+  "entry": "su-terrain.rb",
+  "command": {
+    "title": "中枢地形",
+    "id": "terrain_from_contours"
+  },
+  "shortcut": "Alt+T"
+}

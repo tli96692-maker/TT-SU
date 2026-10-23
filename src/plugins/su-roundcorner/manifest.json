@@ -1,0 +1,25 @@
+{
+  "id": "su-roundcorner",
+  "name": "中枢圆角",
+  "version": "0.2.1",
+  "min_su": "2024",
+  "author": "SU 中枢团队",
+  "license": "MIT",
+  "category": "model",
+  "description": "对平面相邻的凸直边做圆角/倒角，输入默认毫米，可一次撤销。支持互不共端点的多边；交汇多边与凹角会明确拒绝。",
+  "keywords": [
+    "圆角",
+    "yuanjiao",
+    "fillet",
+    "倒角",
+    "daojiao",
+    "chamfer",
+    "rc"
+  ],
+  "entry": "su-roundcorner.rb",
+  "command": {
+    "title": "中枢圆角",
+    "id": "round_corner"
+  },
+  "shortcut": "Alt+R"
+}

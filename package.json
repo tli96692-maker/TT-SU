@@ -1,0 +1,12 @@
+{
+  "name": "tt-su-hub",
+  "version": "0.2.3-beta.1",
+  "private": true,
+  "description": "TT中枢公开核心版的界面测试依赖",
+  "scripts": {
+    "test:ui": "node tests/verify-diagnostics.cjs && node tests/verify-host-updates.cjs"
+  },
+  "devDependencies": {
+    "playwright": "1.59.1"
+  }
+}
